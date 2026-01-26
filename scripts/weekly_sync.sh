@@ -1,6 +1,6 @@
 #!/bin/bash
 # YellowOracle - Script di sincronizzazione settimanale (incrementale)
-# Usa --days 7 per sincronizzare solo le partite degli ultimi 7 giorni
+# Usa --incremental per sincronizzare dall'ultima partita nel DB a oggi
 # Esegui manualmente: ./scripts/weekly_sync.sh [COMPETITIONS]
 # Esempi:
 #   ./scripts/weekly_sync.sh              # Tutte le competizioni
@@ -56,7 +56,7 @@ for COMP in $COMPETITIONS; do
     log ""
     log "--- Sincronizzazione $COMP ---"
 
-    $VENV_PYTHON "$SYNC_SCRIPT" --competition "$COMP" --days 7 --full 2>&1 | tee -a "$LOG_FILE"
+    $VENV_PYTHON "$SYNC_SCRIPT" --competition "$COMP" --season 2025-2026 --incremental --full 2>&1 | tee -a "$LOG_FILE"
 
     SYNC_EXIT_CODE=${PIPESTATUS[0]}
 

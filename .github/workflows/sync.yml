@@ -12,15 +12,15 @@ on:
       sync_type:
         description: 'Tipo di sincronizzazione'
         required: true
-        default: 'weekly'
+        default: 'incremental'
         type: choice
         options:
-          - weekly
+          - incremental
           - full
-      days:
-        description: 'Giorni da sincronizzare (solo per weekly)'
+      season:
+        description: 'Stagione (per sync full)'
         required: false
-        default: '7'
+        default: '2025-2026'
         type: string
 
   # Schedule automatico: ogni lunedi alle 6:00 UTC
@@ -57,12 +57,12 @@ jobs:
         run: |
           COMPETITIONS="${{ github.event.inputs.competitions }}"
           SYNC_TYPE="${{ github.event.inputs.sync_type }}"
-          DAYS="${{ github.event.inputs.days }}"
+          SEASON="${{ github.event.inputs.season }}"
 
           echo "=== YellowOracle Sync ==="
           echo "Competizioni: $COMPETITIONS"
           echo "Tipo: $SYNC_TYPE"
-          echo "Giorni: $DAYS"
+          echo "Stagione: $SEASON"
           echo "========================="
 
           for COMP in $COMPETITIONS; do
@@ -70,24 +70,26 @@ jobs:
             echo ">>> Sincronizzazione $COMP..."
 
             if [ "$SYNC_TYPE" = "full" ]; then
+              # Full sync: tutte le stagioni
               python scripts/sync_football_data.py --competition "$COMP" --all-seasons --full
             else
-              # Weekly sync: usa --days se disponibile, altrimenti stagione corrente
-              python scripts/sync_football_data.py --competition "$COMP" --season 2025-2026 --full
+              # Incremental: dall'ultima partita nel DB a oggi (VELOCE!)
+              python scripts/sync_football_data.py --competition "$COMP" --season "$SEASON" --incremental --full
             fi
           done
 
       - name: Run sync (scheduled)
         if: github.event_name == 'schedule'
         run: |
-          echo "=== YellowOracle Weekly Sync (Scheduled) ==="
+          echo "=== YellowOracle Weekly Sync (Scheduled - Incremental) ==="
 
           COMPETITIONS="SA PL PD BL1 FL1 CL EL"
 
           for COMP in $COMPETITIONS; do
             echo ""
-            echo ">>> Sincronizzazione $COMP..."
-            python scripts/sync_football_data.py --competition "$COMP" --season 2025-2026 --full
+            echo ">>> Sincronizzazione incrementale $COMP..."
+            # Incremental: sincronizza solo dall'ultima partita nel DB
+            python scripts/sync_football_data.py --competition "$COMP" --season 2025-2026 --incremental --full
           done
 
       - name: Summary

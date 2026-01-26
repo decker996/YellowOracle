@@ -2,6 +2,9 @@
 YellowOracle - Sincronizzazione dati da football-data.org
 
 Uso:
+    # Sync incrementale (dall'ultima partita in DB a oggi) - CONSIGLIATO
+    python scripts/sync_football_data.py --competition SA --incremental --full
+
     # Singola competizione e stagione
     python scripts/sync_football_data.py --competition PD --season 2024-2025
 
@@ -98,6 +101,73 @@ def api_request(endpoint: str) -> dict:
 
     time.sleep(RATE_LIMIT_DELAY)
     return response.json()
+
+
+def get_last_match_date(supabase: Client, competition_code: str, season: str) -> Optional[str]:
+    """
+    Trova la data dell'ultima partita FINISHED nel database per una competizione/stagione.
+    Restituisce la data in formato YYYY-MM-DD o None se non ci sono partite.
+    """
+    try:
+        # Trova competition_id
+        comp_query = supabase.table("competitions").select("id").eq("code", competition_code).execute()
+        if not comp_query.data:
+            return None
+
+        competition_id = comp_query.data[0]["id"]
+
+        # Trova l'ultima partita FINISHED
+        match_query = supabase.table("matches")\
+            .select("match_date")\
+            .eq("competition_id", competition_id)\
+            .eq("season", season)\
+            .eq("status", "FINISHED")\
+            .order("match_date", desc=True)\
+            .limit(1)\
+            .execute()
+
+        if match_query.data:
+            # Estrai solo la data (YYYY-MM-DD) dalla datetime
+            match_date = match_query.data[0]["match_date"]
+            if match_date:
+                return match_date[:10]  # "2026-01-20T20:45:00Z" -> "2026-01-20"
+
+        return None
+
+    except Exception as e:
+        print(f"  ⚠️ Errore recuperando ultima partita: {e}")
+        return None
+
+
+def get_players_from_recent_matches(supabase: Client, match_ids: list) -> set:
+    """
+    Recupera gli external_id dei giocatori che hanno giocato nelle partite specificate.
+    Usato per ottimizzare sync_player_stats in modalità incrementale.
+    """
+    player_external_ids = set()
+
+    try:
+        for _, internal_id in match_ids:
+            # Recupera giocatori dalle lineups
+            lineups = supabase.table("lineups")\
+                .select("player_id")\
+                .eq("match_id", internal_id)\
+                .execute()
+
+            for lineup in lineups.data:
+                # Recupera external_id del giocatore
+                player = supabase.table("players")\
+                    .select("external_id")\
+                    .eq("id", lineup["player_id"])\
+                    .execute()
+                if player.data:
+                    player_external_ids.add(player.data[0]["external_id"])
+
+        return player_external_ids
+
+    except Exception as e:
+        print(f"  ⚠️ Errore recuperando giocatori: {e}")
+        return set()
 
 
 def sync_competition(supabase: Client, competition_code: str) -> str:
@@ -263,33 +333,29 @@ def sync_referees(supabase: Client, matches_data: list) -> dict:
     return referee_map
 
 
-def sync_matches(supabase: Client, competition_code: str, competition_id: str, season: str, team_map: dict, referee_map: dict, days: int = None) -> list:
-    """Sincronizza le partite della stagione."""
+def sync_matches(supabase: Client, competition_code: str, competition_id: str, season: str, team_map: dict, referee_map: dict, matches_data: list = None) -> list:
+    """
+    Sincronizza le partite della stagione.
+
+    Args:
+        matches_data: Lista di partite già recuperata dall'API (evita doppia chiamata)
+    """
     print("\n⚽ Sincronizzazione partite...")
 
-    # Validate days parameter
-    if days is not None and days < 0:
-        print("❌ Errore: --days deve essere >= 0")
-        return []
-
-    api_season = season.split("-")[0]
-
-    # Build API URL with optional date range
-    if days is not None:
-        date_from = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
-        date_to = datetime.now().strftime("%Y-%m-%d")
-        endpoint = f"/competitions/{competition_code}/matches?season={api_season}&dateFrom={date_from}&dateTo={date_to}"
-        print(f"  📆 Filtro date: {date_from} -> {date_to}")
-    else:
+    if matches_data is None:
+        # Fallback: recupera tutte le partite della stagione
+        api_season = season.split("-")[0]
         endpoint = f"/competitions/{competition_code}/matches?season={api_season}"
+        data = api_request(endpoint)
+        matches = data.get("matches", [])
+    else:
+        matches = matches_data
 
-    data = api_request(endpoint)
-
-    if not data.get("matches"):
+    if not matches:
         print("  ⚠️ Nessuna partita trovata")
         return []
 
-    matches = data["matches"]
+    print(f"  📊 {len(matches)} partite da sincronizzare")
     match_ids = []  # Lista di (external_id, internal_id)
 
     for match in matches:
@@ -545,21 +611,29 @@ def sync_match_details(supabase: Client, match_ids: list, team_map: dict, player
     print(f"  ✅ Sincronizzati {total_events} eventi, {total_lineups} formazioni, {total_stats} statistiche")
 
 
-def sync_player_stats(supabase: Client, player_map: dict, competition_code: str, season: str):
+def sync_player_stats(supabase: Client, player_map: dict, competition_code: str, season: str, filter_player_ids: set = None):
     """
     Sincronizza statistiche aggregate giocatori da API /persons/{id}/matches.
     Questa è la fonte più accurata per minutes_played, matches_played, yellow_cards.
 
     NOTA: Chiama l'API SENZA filtro competizione per ottenere i totali stagionali.
     Le statistiche per singola competizione sono calcolate dalle viste (player_season_cards).
+
+    Args:
+        filter_player_ids: Se specificato, sincronizza solo questi external_id (modalità incrementale)
     """
-    print("\n📊 Sincronizzazione statistiche giocatori (API Person)...")
+    if filter_player_ids:
+        print(f"\n📊 Sincronizzazione statistiche giocatori (incrementale: {len(filter_player_ids)} giocatori)...")
+        # Filtra player_map per includere solo i giocatori specificati
+        player_items = [(ext_id, int_id) for ext_id, int_id in player_map.items() if ext_id in filter_player_ids]
+    else:
+        print("\n📊 Sincronizzazione statistiche giocatori (API Person)...")
+        player_items = list(player_map.items())
 
     api_season = season.split("-")[0]
     total_synced = 0
     total_skipped = 0
 
-    player_items = list(player_map.items())
     total_players = len(player_items)
 
     for i, (external_id, internal_id) in enumerate(player_items):
@@ -845,8 +919,13 @@ def verify_sync(supabase: Client, competition_code: str, season: str) -> dict:
     return report
 
 
-def sync_season(competition_code: str, season: str, full_sync: bool = False, days: int = None):
-    """Sincronizza tutti i dati per una stagione e competizione."""
+def sync_season(competition_code: str, season: str, full_sync: bool = False, days: int = None, incremental: bool = False):
+    """
+    Sincronizza tutti i dati per una stagione e competizione.
+
+    Args:
+        incremental: Se True, sincronizza dall'ultima partita nel DB fino a oggi
+    """
     comp_name = COMPETITIONS.get(competition_code, {}).get('name', competition_code)
 
     print(f"\n{'='*60}")
@@ -868,22 +947,37 @@ def sync_season(competition_code: str, season: str, full_sync: bool = False, day
     player_map = sync_players(supabase, team_map)
 
     # 3. Partite (recupera anche gli arbitri)
-    # Build API URL with optional date range (same logic as sync_matches)
+    # Build API URL with optional date range
     api_season = season.split("-")[0]
-    if days is not None:
+    date_from = None
+    date_to = datetime.now().strftime("%Y-%m-%d")
+
+    if incremental:
+        # Modalità incrementale: dall'ultima partita nel DB a oggi
+        last_match_date = get_last_match_date(supabase, competition_code, season)
+        if last_match_date:
+            date_from = last_match_date
+            print(f"\n📅 Modalità INCREMENTALE: {date_from} → {date_to}")
+        else:
+            print(f"\n📅 Nessuna partita trovata nel DB, sync completa stagione")
+    elif days is not None:
+        # Modalità --days: ultimi N giorni
         date_from = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
-        date_to = datetime.now().strftime("%Y-%m-%d")
+        print(f"\n📅 Modalità DAYS: ultimi {days} giorni ({date_from} → {date_to})")
+
+    if date_from:
         matches_endpoint = f"/competitions/{competition_code}/matches?season={api_season}&dateFrom={date_from}&dateTo={date_to}"
     else:
         matches_endpoint = f"/competitions/{competition_code}/matches?season={api_season}"
+
     matches_data = api_request(matches_endpoint)
     matches_list = matches_data.get("matches", [])
 
     # 4. Arbitri
     referee_map = sync_referees(supabase, matches_list)
 
-    # 5. Salva partite
-    match_ids = sync_matches(supabase, competition_code, competition_id, season, team_map, referee_map, days)
+    # 5. Salva partite (passa i dati già recuperati per evitare doppia chiamata API)
+    match_ids = sync_matches(supabase, competition_code, competition_id, season, team_map, referee_map, matches_data=matches_list)
 
     # 6. Dettagli partite (solo se full_sync o poche partite)
     if full_sync or len(match_ids) <= 50:
@@ -892,9 +986,18 @@ def sync_season(competition_code: str, season: str, full_sync: bool = False, day
         print(f"\n⚠️ {len(match_ids)} partite trovate. Usa --full per sincronizzare i dettagli.")
         print("   (Questo richiede molte chiamate API)")
 
-    # 7. Statistiche giocatori da API Person (NUOVO - richiede ~500 chiamate API)
+    # 7. Statistiche giocatori da API Person
     if full_sync:
-        sync_player_stats(supabase, player_map, competition_code, season)
+        if incremental and match_ids:
+            # Modalità incrementale: sincronizza solo giocatori delle partite recenti
+            recent_player_ids = get_players_from_recent_matches(supabase, match_ids)
+            if recent_player_ids:
+                sync_player_stats(supabase, player_map, competition_code, season, filter_player_ids=recent_player_ids)
+            else:
+                print("\n⚠️ Nessun giocatore trovato nelle partite recenti")
+        else:
+            # Modalità completa: sincronizza tutti i giocatori
+            sync_player_stats(supabase, player_map, competition_code, season)
     else:
         print("\n⚠️ Usa --full per sincronizzare statistiche giocatori (player_season_stats)")
 
@@ -963,7 +1066,12 @@ def main():
     parser.add_argument(
         "--days",
         type=int,
-        help="Sync only matches from last N days (incremental sync)"
+        help="Sync only matches from last N days"
+    )
+    parser.add_argument(
+        "--incremental",
+        action="store_true",
+        help="Sync incrementale: dall'ultima partita nel DB a oggi (CONSIGLIATO per update settimanali)"
     )
 
     args = parser.parse_args()
@@ -995,7 +1103,7 @@ def main():
     all_reports = []
     for comp in competitions_list:
         for season in seasons_list:
-            report = sync_season(comp, season, args.full, args.days)
+            report = sync_season(comp, season, args.full, args.days, args.incremental)
             if report:
                 all_reports.append(report)
 

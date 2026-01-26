@@ -143,15 +143,15 @@ Claude risponderà con:
 ```bash
 # === SINCRONIZZAZIONE ===
 
-# Sync incrementale (ultimi 7 giorni) - VELOCE
-./venv/bin/python scripts/sync_football_data.py --competition SA --days 7 --full
+# Sync INCREMENTALE (dall'ultima partita in DB a oggi) - CONSIGLIATO!
+./venv/bin/python scripts/sync_football_data.py --competition SA --season 2025-2026 --incremental --full
 
-# Sync completa stagione
-./venv/bin/python scripts/sync_football_data.py --competition SA --season 2025-2026 --full
-
-# Sync tutte le competizioni (script)
+# Sync tutte le competizioni (incrementale)
 ./scripts/weekly_sync.sh              # Tutte, incrementale
 ./scripts/weekly_sync.sh "SA PL"      # Solo alcune
+
+# Sync completa stagione (usa solo per prima volta o ricostruzione)
+./venv/bin/python scripts/sync_football_data.py --competition SA --season 2025-2026 --full
 
 # Sync completa (tutte stagioni)
 ./scripts/full_sync.sh SA             # Solo Serie A
