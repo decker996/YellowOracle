@@ -8,17 +8,20 @@
 
 -- Drop viste esistenti se presenti
 DROP VIEW IF EXISTS player_season_cards CASCADE;
+DROP VIEW IF EXISTS player_season_cards_total CASCADE;
 DROP VIEW IF EXISTS referee_player_history CASCADE;
 DROP VIEW IF EXISTS head_to_head_player_cards CASCADE;
 DROP VIEW IF EXISTS match_analysis_summary CASCADE;
 
 -- Drop funzioni esistenti se presenti
 DROP FUNCTION IF EXISTS get_player_season_stats(TEXT, TEXT);
+DROP FUNCTION IF EXISTS get_player_season_stats(TEXT, TEXT, TEXT);
+DROP FUNCTION IF EXISTS get_player_season_stats_total(TEXT, TEXT);
 DROP FUNCTION IF EXISTS get_referee_player_cards(TEXT, TEXT, TEXT);
 DROP FUNCTION IF EXISTS get_head_to_head_cards(TEXT, TEXT, TEXT);
 
 -- ============================================
--- VISTA 1: Statistiche cartellini per giocatore/stagione
+-- VISTA 1: Statistiche cartellini per giocatore/stagione/competizione
 -- ============================================
 
 CREATE VIEW player_season_cards AS
@@ -29,6 +32,9 @@ SELECT
     t.id AS team_id,
     t.name AS team_name,
     t.short_name AS team_short,
+    c.id AS competition_id,
+    c.code AS competition_code,
+    c.name AS competition_name,
     m.season,
     COUNT(DISTINCT m.id) AS matches_played,
     COUNT(CASE WHEN me.event_type = 'YELLOW_CARD' THEN 1 END) AS yellow_cards,
@@ -49,6 +55,46 @@ FROM players p
 JOIN match_events me ON p.id = me.player_id
 JOIN matches m ON me.match_id = m.id
 JOIN teams t ON me.team_id = t.id
+LEFT JOIN competitions c ON m.competition_id = c.id
+LEFT JOIN lineups l ON l.player_id = p.id AND l.match_id = m.id
+WHERE me.event_type IN ('YELLOW_CARD', 'RED_CARD')
+GROUP BY p.id, p.name, p.position, t.id, t.name, t.short_name, c.id, c.code, c.name, m.season
+ORDER BY m.season DESC, yellow_cards DESC;
+
+
+-- ============================================
+-- VISTA 1B: Statistiche AGGREGATE (tutte le competizioni insieme)
+-- ============================================
+
+CREATE VIEW player_season_cards_total AS
+SELECT
+    p.id AS player_id,
+    p.name AS player_name,
+    p.position,
+    t.id AS team_id,
+    t.name AS team_name,
+    t.short_name AS team_short,
+    m.season,
+    COUNT(DISTINCT m.id) AS matches_played,
+    COUNT(CASE WHEN me.event_type = 'YELLOW_CARD' THEN 1 END) AS yellow_cards,
+    COUNT(CASE WHEN me.event_type = 'RED_CARD' THEN 1 END) AS red_cards,
+    COALESCE(SUM(l.minutes_played), COUNT(DISTINCT m.id) * 90) AS minutes_played,
+    CASE
+        WHEN COALESCE(SUM(l.minutes_played), COUNT(DISTINCT m.id) * 90) >= 90 THEN
+            ROUND(
+                COUNT(CASE WHEN me.event_type = 'YELLOW_CARD' THEN 1 END)::DECIMAL /
+                (COALESCE(SUM(l.minutes_played), COUNT(DISTINCT m.id) * 90)::DECIMAL / 90),
+                2
+            )
+        ELSE NULL
+    END AS yellows_per_90,
+    -- Lista competizioni con cartellini
+    STRING_AGG(DISTINCT c.code, ', ') AS competitions
+FROM players p
+JOIN match_events me ON p.id = me.player_id
+JOIN matches m ON me.match_id = m.id
+JOIN teams t ON me.team_id = t.id
+LEFT JOIN competitions c ON m.competition_id = c.id
 LEFT JOIN lineups l ON l.player_id = p.id AND l.match_id = m.id
 WHERE me.event_type IN ('YELLOW_CARD', 'RED_CARD')
 GROUP BY p.id, p.name, p.position, t.id, t.name, t.short_name, m.season
@@ -144,16 +190,19 @@ ORDER BY m.match_date DESC;
 
 
 -- ============================================
--- FUNZIONE 1: Statistiche stagionali giocatore
+-- FUNZIONE 1: Statistiche stagionali giocatore (per competizione)
 -- ============================================
 
 CREATE OR REPLACE FUNCTION get_player_season_stats(
     p_player_name TEXT,
-    p_season TEXT DEFAULT NULL
+    p_season TEXT DEFAULT NULL,
+    p_competition TEXT DEFAULT NULL
 )
 RETURNS TABLE (
     player_name TEXT,
     team_name TEXT,
+    competition_code VARCHAR(10),
+    competition_name VARCHAR(100),
     season VARCHAR(10),
     matches_played BIGINT,
     yellow_cards BIGINT,
@@ -168,6 +217,8 @@ BEGIN
     SELECT
         psc.player_name::TEXT,
         psc.team_name::TEXT,
+        psc.competition_code,
+        psc.competition_name::VARCHAR(100),
         psc.season,
         psc.matches_played,
         psc.yellow_cards,
@@ -175,6 +226,48 @@ BEGIN
         psc.minutes_played,
         psc.yellows_per_90
     FROM player_season_cards psc
+    WHERE LOWER(psc.player_name) LIKE '%' || LOWER(p_player_name) || '%'
+    AND (p_season IS NULL OR psc.season = p_season)
+    AND (p_competition IS NULL OR psc.competition_code = p_competition)
+    ORDER BY psc.season DESC, psc.competition_code, psc.yellow_cards DESC;
+END;
+$$;
+
+
+-- ============================================
+-- FUNZIONE 1B: Statistiche TOTALI giocatore (tutte le competizioni)
+-- ============================================
+
+CREATE OR REPLACE FUNCTION get_player_season_stats_total(
+    p_player_name TEXT,
+    p_season TEXT DEFAULT NULL
+)
+RETURNS TABLE (
+    player_name TEXT,
+    team_name TEXT,
+    season VARCHAR(10),
+    matches_played BIGINT,
+    yellow_cards BIGINT,
+    red_cards BIGINT,
+    minutes_played NUMERIC,
+    yellows_per_90 NUMERIC,
+    competitions TEXT
+)
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    RETURN QUERY
+    SELECT
+        psc.player_name::TEXT,
+        psc.team_name::TEXT,
+        psc.season,
+        psc.matches_played,
+        psc.yellow_cards,
+        psc.red_cards,
+        psc.minutes_played,
+        psc.yellows_per_90,
+        psc.competitions::TEXT
+    FROM player_season_cards_total psc
     WHERE LOWER(psc.player_name) LIKE '%' || LOWER(p_player_name) || '%'
     AND (p_season IS NULL OR psc.season = p_season)
     ORDER BY psc.season DESC, psc.yellow_cards DESC;
@@ -421,11 +514,13 @@ ORDER BY psc.yellows_per_90 DESC NULLS LAST;
 -- COMMENTI E DOCUMENTAZIONE
 -- ============================================
 
-COMMENT ON VIEW player_season_cards IS 'Statistiche cartellini per giocatore raggruppate per stagione';
+COMMENT ON VIEW player_season_cards IS 'Statistiche cartellini per giocatore/stagione/competizione (separati per CL, campionato, etc.)';
+COMMENT ON VIEW player_season_cards_total IS 'Statistiche cartellini per giocatore/stagione aggregate (tutte le competizioni insieme)';
 COMMENT ON VIEW referee_player_history IS 'Storico completo cartellini arbitro-giocatore';
 COMMENT ON VIEW head_to_head_player_cards IS 'Cartellini giocatori negli scontri diretti';
 COMMENT ON VIEW match_analysis_summary IS 'Riepilogo per analisi pre-partita';
 
-COMMENT ON FUNCTION get_player_season_stats IS 'Restituisce statistiche cartellini di un giocatore per stagione. Usa ricerca fuzzy sul nome.';
-COMMENT ON FUNCTION get_referee_player_cards IS 'Restituisce storico ammonizioni arbitro verso giocatori delle squadre specificate.';
-COMMENT ON FUNCTION get_head_to_head_cards IS 'Restituisce storico cartellini di un giocatore negli scontri diretti tra due squadre.';
+COMMENT ON FUNCTION get_player_season_stats IS 'Statistiche cartellini per stagione/competizione. Params: player_name, season (opt), competition (opt: PD/SA/CL/EL...)';
+COMMENT ON FUNCTION get_player_season_stats_total IS 'Statistiche cartellini TOTALI (tutte le competizioni aggregate). Params: player_name, season (opt)';
+COMMENT ON FUNCTION get_referee_player_cards IS 'Storico ammonizioni arbitro verso giocatori delle squadre specificate.';
+COMMENT ON FUNCTION get_head_to_head_cards IS 'Storico cartellini di un giocatore negli scontri diretti tra due squadre.';

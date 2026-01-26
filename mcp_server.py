@@ -26,22 +26,53 @@ def get_supabase() -> Client:
 
 
 @mcp.tool()
-def get_player_season_stats(player_name: str, season: str = None) -> str:
+def get_player_season_stats(player_name: str, season: str = None, competition: str = None) -> str:
     """
-    Ottiene le statistiche cartellini di un giocatore per stagione.
+    Ottiene le statistiche cartellini di un giocatore per stagione e competizione.
+    I dati sono separati per competizione (es: Serie A vs Champions League).
 
     Args:
         player_name: Nome del giocatore (ricerca parziale supportata)
         season: Stagione specifica (es: "2025-2026") o None per tutte
+        competition: Codice competizione (PD, SA, BL1, PL, FL1, CL, EL) o None per tutte
 
     Returns:
-        Statistiche cartellini: gialli, rossi, partite, media per 90 min
+        Statistiche cartellini per competizione: gialli, rossi, partite, media per 90 min
     """
     supabase = get_supabase()
 
     try:
         result = supabase.rpc(
             "get_player_season_stats",
+            {"p_player_name": player_name, "p_season": season, "p_competition": competition}
+        ).execute()
+
+        if result.data:
+            return json.dumps(result.data, indent=2, default=str)
+        else:
+            return f"Nessun dato trovato per il giocatore '{player_name}'"
+    except Exception as e:
+        return f"Errore: {str(e)}"
+
+
+@mcp.tool()
+def get_player_season_stats_total(player_name: str, season: str = None) -> str:
+    """
+    Ottiene le statistiche cartellini TOTALI di un giocatore (tutte le competizioni aggregate).
+    Utile per avere una visione complessiva del comportamento del giocatore.
+
+    Args:
+        player_name: Nome del giocatore (ricerca parziale supportata)
+        season: Stagione specifica (es: "2025-2026") o None per tutte
+
+    Returns:
+        Statistiche totali: gialli, rossi, partite, media per 90 min, lista competizioni
+    """
+    supabase = get_supabase()
+
+    try:
+        result = supabase.rpc(
+            "get_player_season_stats_total",
             {"p_player_name": player_name, "p_season": season}
         ).execute()
 
@@ -180,6 +211,86 @@ def get_team_players(team_name: str, season: str = "2025-2026") -> str:
             return json.dumps(result.data, indent=2, default=str)
         else:
             return f"Nessun dato trovato per {team_name} nella stagione {season}"
+    except Exception as e:
+        return f"Errore: {str(e)}"
+
+
+@mcp.tool()
+def get_match_statistics(team_name: str = None, season: str = "2025-2026", limit: int = 10) -> str:
+    """
+    Ottiene le statistiche delle partite (falli, possesso, tiri) per una squadra.
+    Dati dal Statistics Add-On di football-data.org.
+
+    Args:
+        team_name: Nome della squadra (opzionale, se None mostra tutte)
+        season: Stagione (default: 2025-2026)
+        limit: Numero massimo di partite da restituire (default: 10)
+
+    Returns:
+        Statistiche partita: falli, possesso palla, tiri, corner, etc.
+    """
+    supabase = get_supabase()
+
+    try:
+        query = supabase.table("match_statistics").select(
+            "*, matches!inner(match_date, season, home_team_id, away_team_id, "
+            "home_team:teams!matches_home_team_id_fkey(name), "
+            "away_team:teams!matches_away_team_id_fkey(name))"
+        ).eq("matches.season", season).order("matches(match_date)", desc=True).limit(limit)
+
+        # Se specificata una squadra, filtra
+        if team_name:
+            # Dobbiamo fare due query separate per home e away
+            home_result = supabase.table("match_statistics").select(
+                "team_side, ball_possession, fouls_committed, fouls_suffered, "
+                "total_shots, shots_on_goal, shots_off_goal, corner_kicks, "
+                "yellow_cards, red_cards, saves, offsides, "
+                "matches!inner(match_date, season, "
+                "home_team:teams!matches_home_team_id_fkey(name), "
+                "away_team:teams!matches_away_team_id_fkey(name))"
+            ).eq("matches.season", season).ilike(
+                "matches.home_team.name", f"%{team_name}%"
+            ).order("matches(match_date)", desc=True).limit(limit).execute()
+
+            away_result = supabase.table("match_statistics").select(
+                "team_side, ball_possession, fouls_committed, fouls_suffered, "
+                "total_shots, shots_on_goal, shots_off_goal, corner_kicks, "
+                "yellow_cards, red_cards, saves, offsides, "
+                "matches!inner(match_date, season, "
+                "home_team:teams!matches_home_team_id_fkey(name), "
+                "away_team:teams!matches_away_team_id_fkey(name))"
+            ).eq("matches.season", season).ilike(
+                "matches.away_team.name", f"%{team_name}%"
+            ).order("matches(match_date)", desc=True).limit(limit).execute()
+
+            # Combina risultati
+            all_data = (home_result.data or []) + (away_result.data or [])
+
+            if all_data:
+                # Calcola medie
+                total_matches = len(all_data)
+                avg_fouls = sum(d.get("fouls_committed", 0) or 0 for d in all_data) / total_matches if total_matches > 0 else 0
+                avg_yellows = sum(d.get("yellow_cards", 0) or 0 for d in all_data) / total_matches if total_matches > 0 else 0
+
+                return json.dumps({
+                    "team": team_name,
+                    "season": season,
+                    "matches_analyzed": total_matches,
+                    "averages": {
+                        "fouls_per_match": round(avg_fouls, 1),
+                        "yellows_per_match": round(avg_yellows, 1)
+                    },
+                    "recent_matches": all_data[:limit]
+                }, indent=2, default=str)
+            else:
+                return f"Nessuna statistica trovata per {team_name} nella stagione {season}"
+        else:
+            result = query.execute()
+            if result.data:
+                return json.dumps(result.data, indent=2, default=str)
+            else:
+                return f"Nessuna statistica trovata per la stagione {season}"
+
     except Exception as e:
         return f"Errore: {str(e)}"
 

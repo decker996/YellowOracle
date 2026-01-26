@@ -43,11 +43,15 @@ API_BASE = "https://api.football-data.org/v4"
 
 # Competizioni supportate
 COMPETITIONS = {
+    # Campionati nazionali
     'PD': {'name': 'La Liga', 'area': 'Spain', 'area_code': 'ESP'},
     'SA': {'name': 'Serie A', 'area': 'Italy', 'area_code': 'ITA'},
     'BL1': {'name': 'Bundesliga', 'area': 'Germany', 'area_code': 'GER'},
     'PL': {'name': 'Premier League', 'area': 'England', 'area_code': 'ENG'},
     'FL1': {'name': 'Ligue 1', 'area': 'France', 'area_code': 'FRA'},
+    # Competizioni UEFA
+    'CL': {'name': 'UEFA Champions League', 'area': 'Europe', 'area_code': 'UEFA'},
+    'EL': {'name': 'UEFA Europa League', 'area': 'Europe', 'area_code': 'UEFA'},
 }
 
 # Rate limiting: 30 chiamate/minuto con piano a pagamento

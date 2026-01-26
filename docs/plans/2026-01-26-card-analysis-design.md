@@ -151,6 +151,7 @@ Se arbitro non trovato: analisi con soli 2 fattori + avviso.
 
 ## Competizioni Supportate
 
+### Campionati Nazionali
 | Codice | Campionato | Paese |
 |--------|------------|-------|
 | PD | La Liga | Spagna |
@@ -158,6 +159,12 @@ Se arbitro non trovato: analisi con soli 2 fattori + avviso.
 | BL1 | Bundesliga | Germania |
 | PL | Premier League | Inghilterra |
 | FL1 | Ligue 1 | Francia |
+
+### Competizioni UEFA
+| Codice | Competizione | Note |
+|--------|--------------|------|
+| CL | UEFA Champions League | Analisi separata da campionati |
+| EL | UEFA Europa League | Analisi separata da campionati |
 
 ---
 

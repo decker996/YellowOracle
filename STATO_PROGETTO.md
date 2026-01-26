@@ -1,62 +1,69 @@
 # YellowOracle - Stato del Progetto
 
-**Ultimo aggiornamento:** 2026-01-26 15:30
-**Fase attuale:** Modifiche strutturali completate, pronto per sync
+**Ultimo aggiornamento:** 2026-01-26 18:00
+**Fase attuale:** Implementazione completata, pronto per sincronizzazione dati
 
 ---
 
-## Stato Database (verificato)
+## Cosa è YellowOracle
+
+Sistema di analisi cartellini per scommesse calcistiche. Analizza:
+1. **Storico stagionale giocatore** - Cartellini per competizione (Serie A, CL, EL...)
+2. **Storico arbitro-giocatore** - Come un arbitro si comporta con specifici giocatori
+3. **Scontri diretti** - Cartellini storici negli head-to-head tra due squadre
+4. **Statistiche partita** - Falli, possesso, tiri (aggregato per squadra)
+
+---
+
+## Stato Database
 
 | Tabella | Record | Note |
 |---------|--------|------|
-| `competitions` | 0 | Nuova tabella, da popolare con sync |
-| `teams` | 24 | La Liga |
-| `players` | 688 | |
-| `referees` | 76 | |
+| `competitions` | 0 | Da popolare con sync |
+| `teams` | 24 | Solo La Liga (vecchia sync) |
+| `players` | 688 | Solo La Liga |
+| `referees` | 76 | Solo La Liga |
 | `matches` | 542 | Parziale, senza competition_id |
 | `match_events` | 271 | Parziale, serve --full |
 | `match_statistics` | 0 | Mai sincronizzate |
-| `lineups` | 1000 | |
+| `lineups` | 1000 | Solo La Liga |
+
+**AZIONE RICHIESTA:** Eseguire sincronizzazione completa (vedi sezione Prossimi Passi)
 
 ---
 
-## Modifiche Completate Oggi (26/01/2026)
+## Competizioni Supportate (7)
 
-### Sessione 1 (mattina)
-1. **Design analisi cartellini** - `docs/plans/2026-01-26-card-analysis-design.md`
-2. **Viste e funzioni SQL** - `database/analysis_views.sql`
-3. **Dashboard Streamlit** - 4 pagine
-4. **Server MCP** - 7 tool
-5. **Script sync base** - La Liga
+### Campionati Nazionali
+| Codice | Campionato | Paese |
+|--------|------------|-------|
+| PD | La Liga | Spagna |
+| SA | Serie A | Italia |
+| BL1 | Bundesliga | Germania |
+| PL | Premier League | Inghilterra |
+| FL1 | Ligue 1 | Francia |
 
-### Sessione 2 (pomeriggio)
-1. **Fix funzione SQL** - `get_player_season_stats` (cast ::TEXT e ::NUMERIC)
-2. **Statistics Add-On** - Aggiunto sync per tutte le statistiche partita
-3. **VAR Referee** - Aggiunta colonna `var_referee_id` a matches
-4. **Multi-competizione** - Supporto per 5 campionati:
-   - PD (La Liga)
-   - SA (Serie A)
-   - BL1 (Bundesliga)
-   - PL (Premier League)
-   - FL1 (Ligue 1)
-5. **Tabella competitions** - Nuova tabella per gestire campionati
+### Competizioni UEFA
+| Codice | Competizione |
+|--------|--------------|
+| CL | UEFA Champions League |
+| EL | UEFA Europa League |
 
 ---
 
-## Struttura Database Attuale
+## MCP Server - 9 Tool Disponibili
 
-```
-competitions (NUOVA)
-     │
-     ▼
-matches ──► teams ──► players
-  │  │
-  │  └──► referees (referee_id, var_referee_id)
-  │
-  ├──► match_events (cartellini, gol)
-  ├──► match_statistics (falli, possesso, tiri - Statistics Add-On)
-  └──► lineups (formazioni)
-```
+| Tool | Descrizione | Parametri |
+|------|-------------|-----------|
+| `get_player_season_stats` | Cartellini per competizione | player_name, season?, competition? |
+| `get_player_season_stats_total` | Cartellini totali (tutte competizioni) | player_name, season? |
+| `get_referee_player_cards` | Storico arbitro-giocatore | referee_name, team1, team2 |
+| `get_head_to_head_cards` | Scontri diretti | player_name, team1, team2 |
+| `get_teams` | Lista squadre | - |
+| `get_referees` | Lista arbitri con statistiche | - |
+| `get_team_players` | Giocatori di una squadra | team_name, season? |
+| `get_match_statistics` | Falli, possesso, tiri | team_name?, season?, limit? |
+| `analyze_match_risk` | Analisi rischio partita | home_team, away_team, referee? |
 
 ---
 
@@ -64,32 +71,33 @@ matches ──► teams ──► players
 
 ```
 soccer/
-├── .env                          # Credenziali (Supabase + Football API)
-├── .mcp.json                     # Configurazione MCP
-├── STATO_PROGETTO.md             # Questo file
-├── mcp_server.py                 # Server MCP (7 tool)
+├── .env                              # Credenziali (Supabase + Football API)
+├── .mcp.json                         # Configurazione MCP per Claude
+├── STATO_PROGETTO.md                 # QUESTO FILE - leggilo sempre all'inizio
+├── mcp_server.py                     # Server MCP (9 tool)
 │
 ├── database/
-│   ├── schema_v2.sql             # Schema completo (AGGIORNATO)
-│   └── analysis_views.sql        # Viste e funzioni (FIX applicati)
+│   ├── schema_v2.sql                 # Schema database completo
+│   └── analysis_views.sql            # Viste e funzioni SQL per analisi
 │
 ├── scripts/
-│   ├── sync_football_data.py     # Sync multi-competizione (AGGIORNATO)
-│   ├── weekly_sync.sh            # Cron settimanale
-│   └── full_sync.sh              # Sync completo (DA AGGIORNARE)
+│   ├── sync_football_data.py         # Script sincronizzazione principale
+│   ├── weekly_sync.sh                # Script per cron settimanale
+│   └── full_sync.sh                  # Script sync completa
 │
 ├── dashboard/
-│   ├── app.py                    # Homepage
+│   ├── app.py                        # Homepage Streamlit
 │   └── pages/
-│       ├── 1_players.py          # Statistiche giocatori
-│       ├── 2_referees.py         # Statistiche arbitri
-│       └── 3_match_analysis.py   # Analisi partita
+│       ├── 1_players.py              # Statistiche giocatori
+│       ├── 2_referees.py             # Statistiche arbitri
+│       └── 3_match_analysis.py       # Analisi partita
 │
 └── docs/
-    ├── CRON_SETUP.md             # Istruzioni cron
+    ├── CRON_SETUP.md                 # Istruzioni cron job
     └── plans/
         ├── 2026-01-26-yelloworacle-design.md
-        └── 2026-01-26-card-analysis-design.md
+        ├── 2026-01-26-card-analysis-design.md
+        └── 2026-01-26-uefa-competitions-design.md
 ```
 
 ---
@@ -98,41 +106,32 @@ soccer/
 
 ### PRIORITA' 1: Sincronizzazione Dati
 
-Eseguire sync completa per popolare il database:
+Il database ha dati parziali. Eseguire sync completa:
 
 ```bash
-# Sync La Liga con tutti i dettagli
-./venv/bin/python scripts/sync_football_data.py \
-    --competition PD \
-    --all-seasons \
-    --full
+# OPZIONE A: Una competizione alla volta (consigliato per test)
+./venv/bin/python scripts/sync_football_data.py --competition SA --season 2025-2026 --full
+
+# OPZIONE B: Tutte le competizioni, stagione corrente
+./venv/bin/python scripts/sync_football_data.py --all-competitions --season 2025-2026 --full
+
+# OPZIONE C: Tutto (tutte le competizioni, tutte le stagioni)
+./venv/bin/python scripts/sync_football_data.py --all-competitions --all-seasons --full
 ```
 
-Questo popolerà:
-- Tabella `competitions`
-- Colonna `matches.competition_id`
-- Tabella `match_statistics` (falli, possesso, etc.)
-- Eventi mancanti in `match_events`
-
-**Tempo stimato:** ~30-60 minuti (rate limit API)
+**Nota:** Rate limit API = 30 call/min. La sync completa richiede tempo.
 
 ### PRIORITA' 2: Test Sistema
 
 Dopo la sync:
-1. Verificare dati in database
-2. Testare funzioni MCP
-3. Testare dashboard Streamlit
+1. Verificare dati: `./venv/bin/python -c "..."` (vedi Comandi Utili)
+2. Testare MCP tool tramite Claude
+3. Avviare dashboard: `./venv/bin/streamlit run dashboard/app.py`
 
-### PRIORITA' 3: Aggiornamenti Script
+### PRIORITA' 3: Script Cron (opzionale)
 
 - [ ] Aggiornare `full_sync.sh` per multi-competizione
 - [ ] Aggiornare `weekly_sync.sh` per multi-competizione
-- [ ] Aggiornare MCP server per filtrare per competizione
-
-### OPZIONALE: Espansione
-
-- [ ] Aggiungere altri campionati (Serie A, etc.)
-- [ ] Creare CLAUDE.md con istruzioni analisi
 - [ ] Configurare cron job automatico
 
 ---
@@ -140,37 +139,79 @@ Dopo la sync:
 ## Comandi Utili
 
 ```bash
-# Sync singola competizione
-./venv/bin/python scripts/sync_football_data.py --competition PD --season 2025-2026 --full
+# === SINCRONIZZAZIONE ===
 
-# Sync multiple competizioni
-./venv/bin/python scripts/sync_football_data.py --competitions PD,SA --all-seasons --full
+# Singola competizione + stagione
+./venv/bin/python scripts/sync_football_data.py --competition SA --season 2025-2026 --full
 
-# Avvia dashboard
-./venv/bin/streamlit run dashboard/app.py
+# Champions League
+./venv/bin/python scripts/sync_football_data.py --competition CL --season 2025-2026 --full
 
-# Verifica stato database
+# Multiple competizioni
+./venv/bin/python scripts/sync_football_data.py --competitions SA,CL,EL --season 2025-2026 --full
+
+# Tutte le competizioni, tutte le stagioni
+./venv/bin/python scripts/sync_football_data.py --all-competitions --all-seasons --full
+
+
+# === VERIFICA DATABASE ===
+
 ./venv/bin/python -c "
 from supabase import create_client
 import os
 from dotenv import load_dotenv
 load_dotenv()
 sb = create_client(os.getenv('SUPABASE_URL'), os.getenv('SUPABASE_KEY'))
-for t in ['competitions','teams','players','referees','matches','match_events','match_statistics']:
+for t in ['competitions','teams','players','referees','matches','match_events','match_statistics','lineups']:
     print(f'{t}: {len(sb.table(t).select(\"id\").execute().data)}')"
+
+
+# === DASHBOARD ===
+
+./venv/bin/streamlit run dashboard/app.py
+
+
+# === TEST MCP SERVER ===
+
+./venv/bin/python -c "
+from mcp_server import get_teams
+print(get_teams())"
 ```
 
 ---
 
-## Come Riprendere
+## Come Riprendere una Sessione
 
-Quando riapri Claude Code:
+Quando apri una nuova chat Claude Code:
 
-> "Leggi STATO_PROGETTO.md"
+```
+Leggi STATO_PROGETTO.md
+```
 
-Per sincronizzare i dati:
+Per continuare con la sincronizzazione:
 
-> "Avvia la sincronizzazione completa per La Liga"
+```
+Avvia la sincronizzazione per Serie A stagione 2025-2026
+```
+
+---
+
+## Architettura
+
+```
+┌─────────────────┐     ┌──────────────────┐     ┌─────────────┐
+│ football-data   │────▶│ sync_football_   │────▶│  Supabase   │
+│ .org API        │     │ data.py          │     │  Database   │
+└─────────────────┘     └──────────────────┘     └─────────────┘
+                                                        │
+                        ┌───────────────────────────────┤
+                        │                               │
+                        ▼                               ▼
+                ┌──────────────┐               ┌──────────────┐
+                │  MCP Server  │               │  Streamlit   │
+                │  (Claude)    │               │  Dashboard   │
+                └──────────────┘               └──────────────┘
+```
 
 ---
 
@@ -182,6 +223,27 @@ Per sincronizzare i dati:
 | Statistics Add-On | Statistics | €15/mese |
 | **Totale** | | **€44/mese** |
 
-Competizioni incluse: 12 (tutti i top 5 europei)
-Rate limit: 30 call/min
-Stagioni: ultime 3 (2023-2024, 2024-2025, 2025-2026)
+- Competizioni incluse: 12 (top 5 europei + coppe UEFA)
+- Rate limit: 30 call/min (delay 2.5s tra chiamate)
+- Stagioni disponibili: ultime 3 (2023-2024, 2024-2025, 2025-2026)
+
+---
+
+## Limitazioni Note
+
+1. **Falli**: Disponibili solo come aggregato per squadra, NON per singolo giocatore
+2. **VAR**: Tracciato come `var_referee_id` ma raramente popolato dall'API
+3. **Minuti giocati**: Stimati se non disponibili (partite * 90)
+
+---
+
+## Cronologia Sessioni
+
+### 2026-01-26
+- **Mattina**: Design iniziale, viste SQL, dashboard Streamlit, MCP server (7 tool)
+- **Pomeriggio**: Fix SQL, Statistics Add-On, VAR, multi-competizione (5 campionati)
+- **Sera**: Tool `get_match_statistics`, supporto UEFA (CL + EL), analisi per competizione, MCP server (9 tool)
+
+---
+
+*Documento di stato per continuità tra sessioni Claude Code*
