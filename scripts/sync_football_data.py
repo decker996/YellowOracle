@@ -488,40 +488,361 @@ def sync_match_details(supabase: Client, match_ids: list, team_map: dict, player
                     except Exception as e:
                         print(f"    ⚠️ Errore statistiche: {e}")
 
+        # --- SOSTITUZIONI (per calcolare minuti giocati) ---
+        if data.get("substitutions"):
+            for sub in data["substitutions"]:
+                minute = sub.get("minute", 90)
+                player_out_ext = sub.get("playerOut", {}).get("id")
+                player_in_ext = sub.get("playerIn", {}).get("id")
+
+                # Aggiorna giocatore uscito
+                if player_out_ext:
+                    player_out_id = player_map.get(player_out_ext)
+                    if player_out_id:
+                        try:
+                            supabase.table("lineups").update({
+                                "subbed_out_minute": minute,
+                                "minutes_played": minute
+                            }).eq("match_id", internal_id).eq("player_id", player_out_id).execute()
+                        except:
+                            pass
+
+                # Aggiorna giocatore entrato
+                if player_in_ext:
+                    player_in_id = player_map.get(player_in_ext)
+                    if player_in_id:
+                        try:
+                            # Stima minuti: 90 - minuto entrata (approssimazione)
+                            minutes_in = max(0, 90 - minute)
+                            supabase.table("lineups").update({
+                                "subbed_in_minute": minute,
+                                "minutes_played": minutes_in
+                            }).eq("match_id", internal_id).eq("player_id", player_in_id).execute()
+                        except:
+                            pass
+
+                # Salva anche come evento SUBSTITUTION
+                if player_out_ext and player_in_ext:
+                    player_out_id = player_map.get(player_out_ext)
+                    player_in_id = player_map.get(player_in_ext)
+                    team_ext_id = sub.get("team", {}).get("id")
+                    team_int_id = team_map.get(team_ext_id)
+
+                    if player_out_id and player_in_id and team_int_id:
+                        try:
+                            supabase.table("match_events").insert({
+                                "match_id": internal_id,
+                                "team_id": team_int_id,
+                                "player_id": player_out_id,
+                                "player_in_id": player_in_id,
+                                "event_type": "SUBSTITUTION",
+                                "minute": minute
+                            }).execute()
+                            total_events += 1
+                        except:
+                            pass
+
     print(f"  ✅ Sincronizzati {total_events} eventi, {total_lineups} formazioni, {total_stats} statistiche")
 
 
-def update_aggregated_stats(supabase: Client, season: str):
-    """Aggiorna le statistiche aggregate per giocatori e arbitri."""
-    print("\n📈 Aggiornamento statistiche aggregate...")
-
-    # Aggiorna statistiche giocatori dalla tabella match_events
-    query = """
-    INSERT INTO player_season_stats (player_id, team_id, season, yellow_cards, red_cards, matches_played)
-    SELECT
-        me.player_id,
-        p.current_team_id,
-        %s as season,
-        COUNT(CASE WHEN me.event_type = 'YELLOW_CARD' THEN 1 END) as yellow_cards,
-        COUNT(CASE WHEN me.event_type = 'RED_CARD' THEN 1 END) as red_cards,
-        COUNT(DISTINCT me.match_id) as matches_played
-    FROM match_events me
-    JOIN players p ON me.player_id = p.id
-    JOIN matches m ON me.match_id = m.id
-    WHERE m.season = %s
-    AND me.event_type IN ('YELLOW_CARD', 'RED_CARD')
-    GROUP BY me.player_id, p.current_team_id
-    ON CONFLICT (player_id, season)
-    DO UPDATE SET
-        yellow_cards = EXCLUDED.yellow_cards,
-        red_cards = EXCLUDED.red_cards,
-        matches_played = GREATEST(player_season_stats.matches_played, EXCLUDED.matches_played),
-        updated_at = NOW()
+def sync_player_stats(supabase: Client, player_map: dict, competition_code: str, season: str):
     """
+    Sincronizza statistiche aggregate giocatori da API /persons/{id}/matches.
+    Questa è la fonte più accurata per minutes_played, matches_played, yellow_cards.
 
-    # Nota: Supabase non supporta query raw SQL direttamente via client Python
-    # Le statistiche aggregate vengono calcolate tramite le viste o trigger
-    print("  ℹ️ Statistiche aggregate calcolate tramite viste del database")
+    NOTA: Chiama l'API SENZA filtro competizione per ottenere i totali stagionali.
+    Le statistiche per singola competizione sono calcolate dalle viste (player_season_cards).
+    """
+    print("\n📊 Sincronizzazione statistiche giocatori (API Person)...")
+
+    api_season = season.split("-")[0]
+    total_synced = 0
+    total_skipped = 0
+
+    player_items = list(player_map.items())
+    total_players = len(player_items)
+
+    for i, (external_id, internal_id) in enumerate(player_items):
+        if (i + 1) % 50 == 0 or i == 0:
+            print(f"  [{i+1}/{total_players}] Sincronizzazione statistiche giocatori...")
+
+        # Chiama API Person per statistiche aggregate (TUTTE le competizioni per avere totali stagionali)
+        data = api_request(f"/persons/{external_id}/matches?season={api_season}&limit=100")
+
+        if not data:
+            total_skipped += 1
+            continue
+
+        agg = data.get("aggregations", {})
+        if not agg:
+            total_skipped += 1
+            continue
+
+        try:
+            # Trova team_id corrente del giocatore
+            player_query = supabase.table("players").select("current_team_id").eq("id", internal_id).execute()
+            team_id = player_query.data[0]["current_team_id"] if player_query.data else None
+
+            # Calcola rossi totali (rossi diretti + doppi gialli)
+            red_cards = agg.get("redCards", 0) + agg.get("yellowRedCards", 0)
+
+            supabase.table("player_season_stats").upsert({
+                "player_id": internal_id,
+                "team_id": team_id,
+                "season": season,
+                "matches_played": agg.get("matchesOnPitch", 0),
+                "matches_started": agg.get("startingXI", 0),
+                "minutes_played": agg.get("minutesPlayed", 0),
+                "goals": agg.get("goals", 0),
+                "assists": agg.get("assists", 0),
+                "yellow_cards": agg.get("yellowCards", 0),
+                "red_cards": red_cards,
+                "updated_at": datetime.now().isoformat()
+            }, on_conflict="player_id,season").execute()
+
+            total_synced += 1
+
+        except Exception as e:
+            print(f"    ⚠️ Errore giocatore {external_id}: {e}")
+            total_skipped += 1
+
+    print(f"  ✅ Sincronizzati {total_synced} giocatori, {total_skipped} saltati")
+    return total_synced
+
+
+def update_referee_stats(supabase: Client):
+    """
+    Aggiorna statistiche aggregate arbitri calcolandole dalle partite nel database.
+    L'API non fornisce statistiche arbitri, quindi le calcoliamo internamente.
+    """
+    print("\n🎯 Aggiornamento statistiche arbitri...")
+
+    try:
+        # Recupera tutti gli arbitri
+        referees = supabase.table("referees").select("id, external_id").execute()
+
+        if not referees.data:
+            print("  ⚠️ Nessun arbitro nel database")
+            return
+
+        updated = 0
+        for ref in referees.data:
+            ref_id = ref["id"]
+
+            # Conta partite arbitrate
+            matches = supabase.table("matches")\
+                .select("id", count="exact")\
+                .eq("referee_id", ref_id)\
+                .eq("status", "FINISHED")\
+                .execute()
+            total_matches = matches.count or 0
+
+            if total_matches == 0:
+                continue
+
+            # Recupera statistiche cartellini dalle partite arbitrate
+            match_ids_query = supabase.table("matches")\
+                .select("id")\
+                .eq("referee_id", ref_id)\
+                .eq("status", "FINISHED")\
+                .execute()
+
+            if not match_ids_query.data:
+                continue
+
+            match_ids = [m["id"] for m in match_ids_query.data]
+
+            # Conta cartellini totali da match_statistics
+            total_yellows = 0
+            total_reds = 0
+            total_fouls = 0
+
+            for match_id in match_ids:
+                stats = supabase.table("match_statistics")\
+                    .select("yellow_cards, red_cards, fouls_committed")\
+                    .eq("match_id", match_id)\
+                    .execute()
+
+                for s in stats.data:
+                    total_yellows += s.get("yellow_cards") or 0
+                    total_reds += s.get("red_cards") or 0
+                    total_fouls += s.get("fouls_committed") or 0
+
+            # Calcola medie
+            avg_yellows = round(total_yellows / total_matches, 2) if total_matches > 0 else 0
+            avg_fouls = round(total_fouls / total_matches, 2) if total_matches > 0 else 0
+
+            # Aggiorna arbitro
+            supabase.table("referees").update({
+                "total_matches": total_matches,
+                "total_yellows": total_yellows,
+                "total_reds": total_reds,
+                "avg_yellows_per_match": avg_yellows,
+                "avg_fouls_per_match": avg_fouls,
+                "updated_at": datetime.now().isoformat()
+            }).eq("id", ref_id).execute()
+
+            updated += 1
+
+        print(f"  ✅ Aggiornati {updated} arbitri")
+
+    except Exception as e:
+        print(f"  ❌ Errore aggiornamento arbitri: {e}")
+
+
+def verify_sync(supabase: Client, competition_code: str, season: str) -> dict:
+    """
+    Verifica completezza del sync e genera report.
+    Restituisce un dizionario con conteggi e warning.
+    """
+    print("\n🔍 Verifica completezza sync...")
+
+    report = {
+        "competition": competition_code,
+        "season": season,
+        "tables": {},
+        "warnings": [],
+        "status": "OK"
+    }
+
+    # Recupera competition_id
+    comp_query = supabase.table("competitions").select("id").eq("code", competition_code).execute()
+    competition_id = comp_query.data[0]["id"] if comp_query.data else None
+
+    # 1. Conta record per tabella principale
+    tables_to_check = [
+        ("competitions", None),
+        ("teams", None),
+        ("players", None),
+        ("referees", None),
+    ]
+
+    for table, filter_col in tables_to_check:
+        try:
+            query = supabase.table(table).select("id", count="exact")
+            result = query.execute()
+            report["tables"][table] = result.count or 0
+        except Exception as e:
+            report["tables"][table] = f"ERROR: {e}"
+
+    # 2. Conta partite per questa competizione/stagione
+    try:
+        matches_query = supabase.table("matches")\
+            .select("id", count="exact")\
+            .eq("competition_id", competition_id)\
+            .eq("season", season)\
+            .execute()
+        report["tables"]["matches"] = matches_query.count or 0
+
+        # Conta partite FINISHED
+        finished_query = supabase.table("matches")\
+            .select("id", count="exact")\
+            .eq("competition_id", competition_id)\
+            .eq("season", season)\
+            .eq("status", "FINISHED")\
+            .execute()
+        report["tables"]["matches_finished"] = finished_query.count or 0
+    except Exception as e:
+        report["tables"]["matches"] = f"ERROR: {e}"
+
+    # 3. Conta eventi (cartellini)
+    try:
+        events_query = supabase.table("match_events")\
+            .select("id", count="exact")\
+            .execute()
+        report["tables"]["match_events"] = events_query.count or 0
+
+        # Conta solo cartellini
+        cards_query = supabase.table("match_events")\
+            .select("id", count="exact")\
+            .in_("event_type", ["YELLOW_CARD", "RED_CARD"])\
+            .execute()
+        report["tables"]["cards_total"] = cards_query.count or 0
+    except Exception as e:
+        report["tables"]["match_events"] = f"ERROR: {e}"
+
+    # 4. Conta player_season_stats
+    try:
+        stats_query = supabase.table("player_season_stats")\
+            .select("id", count="exact")\
+            .eq("season", season)\
+            .execute()
+        report["tables"]["player_season_stats"] = stats_query.count or 0
+    except Exception as e:
+        report["tables"]["player_season_stats"] = f"ERROR: {e}"
+
+    # 5. Conta lineups
+    try:
+        lineups_query = supabase.table("lineups")\
+            .select("id", count="exact")\
+            .execute()
+        report["tables"]["lineups"] = lineups_query.count or 0
+    except Exception as e:
+        report["tables"]["lineups"] = f"ERROR: {e}"
+
+    # 6. Conta match_statistics
+    try:
+        match_stats_query = supabase.table("match_statistics")\
+            .select("id", count="exact")\
+            .execute()
+        report["tables"]["match_statistics"] = match_stats_query.count or 0
+    except Exception as e:
+        report["tables"]["match_statistics"] = f"ERROR: {e}"
+
+    # === VERIFICHE E WARNING ===
+
+    # Warning 1: player_season_stats vuota
+    if isinstance(report["tables"].get("player_season_stats"), int):
+        if report["tables"]["player_season_stats"] == 0:
+            report["warnings"].append("CRITICAL: player_season_stats is EMPTY!")
+            report["status"] = "WARNING"
+        elif report["tables"]["player_season_stats"] < 100:
+            report["warnings"].append(f"LOW: Only {report['tables']['player_season_stats']} players in player_season_stats")
+
+    # Warning 2: Nessun cartellino
+    if isinstance(report["tables"].get("cards_total"), int):
+        if report["tables"]["cards_total"] == 0:
+            report["warnings"].append("CRITICAL: No cards (YELLOW_CARD/RED_CARD) in match_events!")
+            report["status"] = "WARNING"
+
+    # Warning 3: Arbitri senza statistiche
+    try:
+        refs_no_stats = supabase.table("referees")\
+            .select("id", count="exact")\
+            .eq("total_matches", 0)\
+            .execute()
+        if refs_no_stats.count and refs_no_stats.count > 0:
+            report["warnings"].append(f"INFO: {refs_no_stats.count} referees with total_matches=0")
+    except:
+        pass
+
+    # Warning 4: Partite FINISHED senza eventi
+    if isinstance(report["tables"].get("matches_finished"), int) and report["tables"]["matches_finished"] > 0:
+        if isinstance(report["tables"].get("match_events"), int) and report["tables"]["match_events"] == 0:
+            report["warnings"].append("WARNING: FINISHED matches but no events!")
+            report["status"] = "WARNING"
+
+    # Stampa report
+    print("\n" + "="*50)
+    print(f"📋 SYNC REPORT: {competition_code} {season}")
+    print("="*50)
+
+    print("\n📊 Record per tabella:")
+    for table, count in report["tables"].items():
+        status_icon = "✅" if isinstance(count, int) and count > 0 else "⚠️"
+        print(f"  {status_icon} {table}: {count}")
+
+    if report["warnings"]:
+        print("\n⚠️ Warning:")
+        for w in report["warnings"]:
+            print(f"  - {w}")
+    else:
+        print("\n✅ Nessun warning")
+
+    print(f"\n🏁 Status: {report['status']}")
+    print("="*50)
+
+    return report
 
 
 def sync_season(competition_code: str, season: str, full_sync: bool = False, days: int = None):
@@ -541,7 +862,7 @@ def sync_season(competition_code: str, season: str, full_sync: bool = False, day
     team_map = sync_teams(supabase, competition_code, season)
     if not team_map:
         print("❌ Impossibile continuare senza squadre")
-        return
+        return None
 
     # 2. Giocatori
     player_map = sync_players(supabase, team_map)
@@ -571,12 +892,23 @@ def sync_season(competition_code: str, season: str, full_sync: bool = False, day
         print(f"\n⚠️ {len(match_ids)} partite trovate. Usa --full per sincronizzare i dettagli.")
         print("   (Questo richiede molte chiamate API)")
 
-    # 7. Aggiorna statistiche aggregate
-    update_aggregated_stats(supabase, season)
+    # 7. Statistiche giocatori da API Person (NUOVO - richiede ~500 chiamate API)
+    if full_sync:
+        sync_player_stats(supabase, player_map, competition_code, season)
+    else:
+        print("\n⚠️ Usa --full per sincronizzare statistiche giocatori (player_season_stats)")
+
+    # 8. Aggiorna statistiche arbitri (calcolo interno, 0 chiamate API)
+    update_referee_stats(supabase)
+
+    # 9. Verifica completezza e genera report
+    report = verify_sync(supabase, competition_code, season)
 
     print(f"\n{'='*60}")
     print(f"✅ SINCRONIZZAZIONE {comp_name} {season} COMPLETATA")
     print(f"{'='*60}")
+
+    return report
 
 
 def main():
@@ -660,9 +992,53 @@ def main():
         seasons_list = [args.season]
 
     # Esegui sincronizzazione
+    all_reports = []
     for comp in competitions_list:
         for season in seasons_list:
-            sync_season(comp, season, args.full, args.days)
+            report = sync_season(comp, season, args.full, args.days)
+            if report:
+                all_reports.append(report)
+
+    # Genera summary finale
+    print("\n" + "="*60)
+    print("📋 SUMMARY FINALE")
+    print("="*60)
+
+    has_warnings = False
+    for report in all_reports:
+        status_icon = "✅" if report["status"] == "OK" else "⚠️"
+        print(f"\n{status_icon} {report['competition']} {report['season']}: {report['status']}")
+        if report["warnings"]:
+            has_warnings = True
+            for w in report["warnings"]:
+                print(f"   - {w}")
+
+    # Scrivi nel GITHUB_STEP_SUMMARY se presente
+    github_summary = os.getenv("GITHUB_STEP_SUMMARY")
+    if github_summary:
+        try:
+            with open(github_summary, "a") as f:
+                f.write("\n## YellowOracle Sync Report\n\n")
+
+                for report in all_reports:
+                    status_icon = "✅" if report["status"] == "OK" else "⚠️"
+                    f.write(f"### {status_icon} {report['competition']} {report['season']}\n\n")
+
+                    f.write("| Tabella | Record |\n")
+                    f.write("|---------|--------|\n")
+                    for table, count in report["tables"].items():
+                        f.write(f"| {table} | {count} |\n")
+                    f.write("\n")
+
+                    if report["warnings"]:
+                        f.write("**Warnings:**\n")
+                        for w in report["warnings"]:
+                            f.write(f"- {w}\n")
+                        f.write("\n")
+
+                f.write(f"\n**Sync completato:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        except Exception as e:
+            print(f"⚠️ Impossibile scrivere GITHUB_STEP_SUMMARY: {e}")
 
     print("\n🎉 Done!")
 
