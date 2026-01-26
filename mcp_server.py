@@ -424,6 +424,8 @@ def analyze_match_risk(home_team: str, away_team: str, referee: str = None) -> s
     WEIGHT_SEASONAL = 0.40
     WEIGHT_REFEREE = 0.35
     WEIGHT_H2H = 0.25
+    DEFAULT_REFEREE_SCORE = 25  # Fallback conservativo quando non c'è storico con arbitro
+    H2H_THRESHOLD = 30  # Soglia seasonal_score per query H2H (ottimizzazione)
 
     try:
         # --- DATI STAGIONALI ---
@@ -476,13 +478,13 @@ def analyze_match_risk(home_team: str, away_team: str, referee: str = None) -> s
                     referee_score = ref_info["booking_percentage"]
                     referee_info = f"{ref_info['times_booked']} in {ref_info['matches_with_referee']} partite"
                 elif referee:
-                    # Nessuno storico con arbitro: usa 25% della media arbitro come proxy
-                    referee_score = 25  # valore conservativo
+                    # Nessuno storico con arbitro
+                    referee_score = DEFAULT_REFEREE_SCORE
 
                 # 3. H2H SCORE (25%) - query per i top candidati
                 h2h_score = 0
                 h2h_info = None
-                if seasonal_score > 30:  # Solo per giocatori con storico significativo
+                if seasonal_score > H2H_THRESHOLD:
                     try:
                         h2h_result = supabase.rpc(
                             "get_head_to_head_cards",
@@ -500,8 +502,8 @@ def analyze_match_risk(home_team: str, away_team: str, referee: str = None) -> s
                             if h2h_matches > 0:
                                 h2h_score = (h2h_yellows / h2h_matches) * 100
                                 h2h_info = f"{h2h_yellows} in {h2h_matches} H2H"
-                    except:
-                        pass
+                    except Exception:
+                        pass  # H2H query failed, continue without H2H data
 
                 # SCORE COMBINATO
                 if referee:
