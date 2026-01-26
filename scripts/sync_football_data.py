@@ -27,9 +27,11 @@ import os
 import sys
 import time
 import argparse
+import asyncio
 from datetime import datetime, timedelta
 from typing import Optional
 
+import aiohttp
 import requests
 from supabase import create_client, Client
 from dotenv import load_dotenv
@@ -58,7 +60,11 @@ COMPETITIONS = {
 }
 
 # Rate limiting: 30 chiamate/minuto con piano a pagamento
-RATE_LIMIT_DELAY = 2.5  # secondi tra le chiamate
+RATE_LIMIT_DELAY = 2.5  # secondi tra le chiamate (per sync sequenziale)
+
+# Parallelizzazione: batch di richieste rispettando 30 req/min
+PARALLEL_BATCH_SIZE = 25  # Richieste per batch (lasciamo margine sotto 30)
+PARALLEL_BATCH_DELAY = 60  # Secondi tra batch (per rispettare rate limit)
 
 # Stagioni supportate (piano Free + Deep Data: ultime 3 stagioni)
 # Nota: stagioni più vecchie richiedono piano superiore
@@ -101,6 +107,93 @@ def api_request(endpoint: str) -> dict:
 
     time.sleep(RATE_LIMIT_DELAY)
     return response.json()
+
+
+async def api_request_async(session: aiohttp.ClientSession, endpoint: str) -> dict:
+    """Esegue una richiesta asincrona all'API football-data.org."""
+    url = f"{API_BASE}{endpoint}"
+    headers = {"X-Auth-Token": FOOTBALL_API_KEY}
+
+    try:
+        async with session.get(url, headers=headers) as response:
+            if response.status == 429:
+                # Rate limit - questo non dovrebbe mai accadere con batch corretti
+                print(f"  ⚠️ Rate limit su {endpoint}, riprovo...")
+                await asyncio.sleep(60)
+                async with session.get(url, headers=headers) as retry_response:
+                    if retry_response.status == 200:
+                        return await retry_response.json()
+                    return {}
+
+            if response.status != 200:
+                return {}
+
+            return await response.json()
+    except Exception as e:
+        print(f"  ⚠️ Errore async {endpoint}: {e}")
+        return {}
+
+
+async def api_request_batch(endpoints: list, description: str = "richieste") -> list:
+    """
+    Esegue un batch di richieste in parallelo rispettando il rate limit.
+    Divide le richieste in batch da PARALLEL_BATCH_SIZE con pause tra batch.
+    """
+    all_results = []
+    total_endpoints = len(endpoints)
+    total_batches = (total_endpoints + PARALLEL_BATCH_SIZE - 1) // PARALLEL_BATCH_SIZE
+    successful = 0
+    failed = 0
+
+    print(f"\n  {'='*50}")
+    print(f"  🚀 PARALLELIZZAZIONE: {total_endpoints} {description}")
+    print(f"  📦 {total_batches} batch da {PARALLEL_BATCH_SIZE} richieste")
+    print(f"  ⏱️  Tempo stimato: ~{total_batches * PARALLEL_BATCH_DELAY // 60} min")
+    print(f"  {'='*50}")
+
+    start_total = time.time()
+
+    async with aiohttp.ClientSession() as session:
+        for i in range(0, len(endpoints), PARALLEL_BATCH_SIZE):
+            batch = endpoints[i:i+PARALLEL_BATCH_SIZE]
+            batch_num = i // PARALLEL_BATCH_SIZE + 1
+            batch_start = time.time()
+
+            print(f"\n  📡 Batch {batch_num}/{total_batches}: {len(batch)} richieste in parallelo...")
+
+            # Esegui batch in parallelo
+            tasks = [api_request_async(session, endpoint) for endpoint in batch]
+            results = await asyncio.gather(*tasks)
+            all_results.extend(results)
+
+            # Conta successi/fallimenti
+            batch_success = sum(1 for r in results if r)
+            batch_failed = len(batch) - batch_success
+            successful += batch_success
+            failed += batch_failed
+
+            batch_time = time.time() - batch_start
+            print(f"  ✅ Batch {batch_num} completato in {batch_time:.1f}s - Successi: {batch_success}/{len(batch)}")
+
+            # Pausa tra batch per rispettare rate limit (solo se ci sono altri batch)
+            if i + PARALLEL_BATCH_SIZE < len(endpoints):
+                remaining = total_batches - batch_num
+                elapsed = time.time() - start_total
+                eta = (elapsed / batch_num) * remaining
+                print(f"  ⏳ Pausa {PARALLEL_BATCH_DELAY}s per rate limit... (ETA: {eta/60:.1f} min)")
+                await asyncio.sleep(PARALLEL_BATCH_DELAY)
+
+    # Riepilogo finale
+    total_time = time.time() - start_total
+    print(f"\n  {'='*50}")
+    print(f"  🏁 PARALLELIZZAZIONE COMPLETATA")
+    print(f"  ⏱️  Tempo totale: {total_time/60:.1f} min")
+    print(f"  ✅ Successi: {successful}/{total_endpoints} ({successful*100//total_endpoints}%)")
+    if failed > 0:
+        print(f"  ❌ Falliti: {failed}")
+    print(f"  {'='*50}\n")
+
+    return all_results
 
 
 def get_last_match_date(supabase: Client, competition_code: str, season: str) -> Optional[str]:
@@ -409,204 +502,219 @@ def sync_matches(supabase: Client, competition_code: str, competition_id: str, s
     return match_ids
 
 
-def sync_match_details(supabase: Client, match_ids: list, team_map: dict, player_map: dict):
-    """Sincronizza i dettagli delle partite (eventi, formazioni, statistiche)."""
-    print("\n📊 Sincronizzazione dettagli partite...")
-
+def process_match_detail(supabase: Client, data: dict, internal_id: str, team_map: dict, player_map: dict) -> tuple:
+    """Processa i dettagli di una singola partita e salva nel DB. Ritorna (events, lineups, stats)."""
     total_events = 0
     total_lineups = 0
     total_stats = 0
 
-    for i, (external_id, internal_id) in enumerate(match_ids):
-        print(f"  [{i+1}/{len(match_ids)}] Partita {external_id}")
+    if not data:
+        return (0, 0, 0)
 
-        data = api_request(f"/matches/{external_id}")
+    # --- FORMAZIONI ---
+    if data.get("homeTeam", {}).get("lineup"):
+        for lineup_data in [(data["homeTeam"], True), (data["awayTeam"], True)]:
+            team_data, is_home = lineup_data
+            team_ext_id = team_data["id"]
+            team_int_id = team_map.get(team_ext_id)
 
-        if not data:
-            continue
+            if not team_int_id:
+                continue
 
-        # --- FORMAZIONI ---
-        if data.get("homeTeam", {}).get("lineup"):
-            for lineup_data in [
-                (data["homeTeam"], True),
-                (data["awayTeam"], True)
-            ]:
-                team_data, is_home = lineup_data
-                team_ext_id = team_data["id"]
-                team_int_id = team_map.get(team_ext_id)
-
-                if not team_int_id:
+            # Titolari
+            for player in team_data.get("lineup", []):
+                player_int_id = player_map.get(player["id"])
+                if not player_int_id:
                     continue
+                try:
+                    supabase.table("lineups").upsert({
+                        "match_id": internal_id,
+                        "team_id": team_int_id,
+                        "player_id": player_int_id,
+                        "is_starter": True,
+                        "is_substitute": False,
+                        "shirt_number": player.get("shirtNumber"),
+                        "position": player.get("position")
+                    }, on_conflict="match_id,player_id").execute()
+                    total_lineups += 1
+                except:
+                    pass
 
-                # Titolari
-                for player in team_data.get("lineup", []):
-                    player_int_id = player_map.get(player["id"])
-                    if not player_int_id:
-                        continue
+            # Panchina
+            for player in team_data.get("bench", []):
+                player_int_id = player_map.get(player["id"])
+                if not player_int_id:
+                    continue
+                try:
+                    supabase.table("lineups").upsert({
+                        "match_id": internal_id,
+                        "team_id": team_int_id,
+                        "player_id": player_int_id,
+                        "is_starter": False,
+                        "is_substitute": True,
+                        "shirt_number": player.get("shirtNumber"),
+                        "position": player.get("position")
+                    }, on_conflict="match_id,player_id").execute()
+                    total_lineups += 1
+                except:
+                    pass
 
+    # --- EVENTI (GOL, CARTELLINI) ---
+    if data.get("goals"):
+        for goal in data["goals"]:
+            player_int_id = player_map.get(goal.get("scorer", {}).get("id"))
+            team_int_id = team_map.get(goal.get("team", {}).get("id"))
+            if player_int_id and team_int_id:
+                try:
+                    event_type = "OWN_GOAL" if goal.get("type") == "OWN" else "GOAL"
+                    if goal.get("type") == "PENALTY":
+                        event_type = "PENALTY"
+                    supabase.table("match_events").insert({
+                        "match_id": internal_id,
+                        "team_id": team_int_id,
+                        "player_id": player_int_id,
+                        "event_type": event_type,
+                        "minute": goal.get("minute"),
+                        "detail": goal.get("type")
+                    }).execute()
+                    total_events += 1
+                except:
+                    pass
+
+    if data.get("bookings"):
+        for booking in data["bookings"]:
+            player_int_id = player_map.get(booking.get("player", {}).get("id"))
+            team_int_id = team_map.get(booking.get("team", {}).get("id"))
+            if player_int_id and team_int_id:
+                try:
+                    card_type = "YELLOW_CARD" if booking.get("card") == "YELLOW" else "RED_CARD"
+                    supabase.table("match_events").insert({
+                        "match_id": internal_id,
+                        "team_id": team_int_id,
+                        "player_id": player_int_id,
+                        "event_type": card_type,
+                        "minute": booking.get("minute"),
+                        "detail": booking.get("card")
+                    }).execute()
+                    total_events += 1
+                except:
+                    pass
+
+    # --- STATISTICHE PARTITA (Statistics Add-On) ---
+    for team_key, is_home in [('homeTeam', True), ('awayTeam', False)]:
+        team_data = data.get(team_key, {})
+        match_stats = team_data.get('statistics', {})
+        if match_stats:
+            team_ext_id = team_data.get('id')
+            team_int_id = team_map.get(team_ext_id)
+            if team_int_id:
+                try:
+                    supabase.table("match_statistics").upsert({
+                        "match_id": internal_id,
+                        "team_id": team_int_id,
+                        "ball_possession": match_stats.get("ball_possession"),
+                        "shots_on_goal": match_stats.get("shots_on_goal"),
+                        "shots_off_goal": match_stats.get("shots_off_goal"),
+                        "total_shots": match_stats.get("shots"),
+                        "corner_kicks": match_stats.get("corner_kicks"),
+                        "free_kicks": match_stats.get("free_kicks"),
+                        "goal_kicks": match_stats.get("goal_kicks"),
+                        "throw_ins": match_stats.get("throw_ins"),
+                        "saves": match_stats.get("saves"),
+                        "offsides": match_stats.get("offsides"),
+                        "fouls_committed": match_stats.get("fouls"),
+                        "yellow_cards": match_stats.get("yellow_cards"),
+                        "red_cards": match_stats.get("red_cards")
+                    }, on_conflict="match_id,team_id").execute()
+                    total_stats += 1
+                except:
+                    pass
+
+    # --- SOSTITUZIONI (per calcolare minuti giocati) ---
+    if data.get("substitutions"):
+        for sub in data["substitutions"]:
+            minute = sub.get("minute", 90)
+            player_out_ext = sub.get("playerOut", {}).get("id")
+            player_in_ext = sub.get("playerIn", {}).get("id")
+
+            if player_out_ext:
+                player_out_id = player_map.get(player_out_ext)
+                if player_out_id:
                     try:
-                        supabase.table("lineups").upsert({
-                            "match_id": internal_id,
-                            "team_id": team_int_id,
-                            "player_id": player_int_id,
-                            "is_starter": True,
-                            "is_substitute": False,
-                            "shirt_number": player.get("shirtNumber"),
-                            "position": player.get("position")
-                        }, on_conflict="match_id,player_id").execute()
-                        total_lineups += 1
-                    except Exception as e:
+                        supabase.table("lineups").update({
+                            "subbed_out_minute": minute,
+                            "minutes_played": minute
+                        }).eq("match_id", internal_id).eq("player_id", player_out_id).execute()
+                    except:
                         pass
 
-                # Panchina
-                for player in team_data.get("bench", []):
-                    player_int_id = player_map.get(player["id"])
-                    if not player_int_id:
-                        continue
-
+            if player_in_ext:
+                player_in_id = player_map.get(player_in_ext)
+                if player_in_id:
                     try:
-                        supabase.table("lineups").upsert({
-                            "match_id": internal_id,
-                            "team_id": team_int_id,
-                            "player_id": player_int_id,
-                            "is_starter": False,
-                            "is_substitute": True,
-                            "shirt_number": player.get("shirtNumber"),
-                            "position": player.get("position")
-                        }, on_conflict="match_id,player_id").execute()
-                        total_lineups += 1
-                    except Exception as e:
+                        minutes_in = max(0, 90 - minute)
+                        supabase.table("lineups").update({
+                            "subbed_in_minute": minute,
+                            "minutes_played": minutes_in
+                        }).eq("match_id", internal_id).eq("player_id", player_in_id).execute()
+                    except:
                         pass
 
-        # --- EVENTI (GOL, CARTELLINI) ---
-        if data.get("goals"):
-            for goal in data["goals"]:
-                player_int_id = player_map.get(goal.get("scorer", {}).get("id"))
-                team_int_id = team_map.get(goal.get("team", {}).get("id"))
-
-                if player_int_id and team_int_id:
-                    try:
-                        event_type = "OWN_GOAL" if goal.get("type") == "OWN" else "GOAL"
-                        if goal.get("type") == "PENALTY":
-                            event_type = "PENALTY"
-
-                        supabase.table("match_events").insert({
-                            "match_id": internal_id,
-                            "team_id": team_int_id,
-                            "player_id": player_int_id,
-                            "event_type": event_type,
-                            "minute": goal.get("minute"),
-                            "detail": goal.get("type")
-                        }).execute()
-                        total_events += 1
-                    except Exception as e:
-                        pass
-
-        if data.get("bookings"):
-            for booking in data["bookings"]:
-                player_int_id = player_map.get(booking.get("player", {}).get("id"))
-                team_int_id = team_map.get(booking.get("team", {}).get("id"))
-
-                if player_int_id and team_int_id:
-                    try:
-                        card_type = "YELLOW_CARD" if booking.get("card") == "YELLOW" else "RED_CARD"
-
-                        supabase.table("match_events").insert({
-                            "match_id": internal_id,
-                            "team_id": team_int_id,
-                            "player_id": player_int_id,
-                            "event_type": card_type,
-                            "minute": booking.get("minute"),
-                            "detail": booking.get("card")
-                        }).execute()
-                        total_events += 1
-                    except Exception as e:
-                        pass
-
-        # --- STATISTICHE PARTITA (Statistics Add-On) ---
-        for team_key, is_home in [('homeTeam', True), ('awayTeam', False)]:
-            team_data = data.get(team_key, {})
-            stats = team_data.get('statistics', {})
-            if stats:
-                team_ext_id = team_data.get('id')
+            if player_out_ext and player_in_ext:
+                player_out_id = player_map.get(player_out_ext)
+                player_in_id = player_map.get(player_in_ext)
+                team_ext_id = sub.get("team", {}).get("id")
                 team_int_id = team_map.get(team_ext_id)
-
-                if team_int_id:
+                if player_out_id and player_in_id and team_int_id:
                     try:
-                        supabase.table("match_statistics").upsert({
+                        supabase.table("match_events").insert({
                             "match_id": internal_id,
                             "team_id": team_int_id,
-                            "ball_possession": stats.get("ball_possession"),
-                            "shots_on_goal": stats.get("shots_on_goal"),
-                            "shots_off_goal": stats.get("shots_off_goal"),
-                            "total_shots": stats.get("shots"),
-                            "corner_kicks": stats.get("corner_kicks"),
-                            "free_kicks": stats.get("free_kicks"),
-                            "goal_kicks": stats.get("goal_kicks"),
-                            "throw_ins": stats.get("throw_ins"),
-                            "saves": stats.get("saves"),
-                            "offsides": stats.get("offsides"),
-                            "fouls_committed": stats.get("fouls"),
-                            "yellow_cards": stats.get("yellow_cards"),
-                            "red_cards": stats.get("red_cards")
-                        }, on_conflict="match_id,team_id").execute()
-                        total_stats += 1
-                    except Exception as e:
-                        print(f"    ⚠️ Errore statistiche: {e}")
+                            "player_id": player_out_id,
+                            "player_in_id": player_in_id,
+                            "event_type": "SUBSTITUTION",
+                            "minute": minute
+                        }).execute()
+                        total_events += 1
+                    except:
+                        pass
 
-        # --- SOSTITUZIONI (per calcolare minuti giocati) ---
-        if data.get("substitutions"):
-            for sub in data["substitutions"]:
-                minute = sub.get("minute", 90)
-                player_out_ext = sub.get("playerOut", {}).get("id")
-                player_in_ext = sub.get("playerIn", {}).get("id")
+    return (total_events, total_lineups, total_stats)
 
-                # Aggiorna giocatore uscito
-                if player_out_ext:
-                    player_out_id = player_map.get(player_out_ext)
-                    if player_out_id:
-                        try:
-                            supabase.table("lineups").update({
-                                "subbed_out_minute": minute,
-                                "minutes_played": minute
-                            }).eq("match_id", internal_id).eq("player_id", player_out_id).execute()
-                        except:
-                            pass
 
-                # Aggiorna giocatore entrato
-                if player_in_ext:
-                    player_in_id = player_map.get(player_in_ext)
-                    if player_in_id:
-                        try:
-                            # Stima minuti: 90 - minuto entrata (approssimazione)
-                            minutes_in = max(0, 90 - minute)
-                            supabase.table("lineups").update({
-                                "subbed_in_minute": minute,
-                                "minutes_played": minutes_in
-                            }).eq("match_id", internal_id).eq("player_id", player_in_id).execute()
-                        except:
-                            pass
+def sync_match_details(supabase: Client, match_ids: list, team_map: dict, player_map: dict):
+    """
+    Sincronizza i dettagli delle partite (eventi, formazioni, statistiche).
+    USA PARALLELIZZAZIONE per velocizzare il sync.
+    """
+    if not match_ids:
+        print("\n📊 Nessuna partita da sincronizzare")
+        return
 
-                # Salva anche come evento SUBSTITUTION
-                if player_out_ext and player_in_ext:
-                    player_out_id = player_map.get(player_out_ext)
-                    player_in_id = player_map.get(player_in_ext)
-                    team_ext_id = sub.get("team", {}).get("id")
-                    team_int_id = team_map.get(team_ext_id)
+    total_matches = len(match_ids)
+    total_batches = (total_matches + PARALLEL_BATCH_SIZE - 1) // PARALLEL_BATCH_SIZE
 
-                    if player_out_id and player_in_id and team_int_id:
-                        try:
-                            supabase.table("match_events").insert({
-                                "match_id": internal_id,
-                                "team_id": team_int_id,
-                                "player_id": player_out_id,
-                                "player_in_id": player_in_id,
-                                "event_type": "SUBSTITUTION",
-                                "minute": minute
-                            }).execute()
-                            total_events += 1
-                        except:
-                            pass
+    print(f"\n{'='*60}")
+    print(f"📊 SYNC DETTAGLI PARTITE (eventi, formazioni, statistiche)")
+    print(f"{'='*60}")
+
+    # Costruisci lista di endpoint
+    endpoints = [f"/matches/{ext_id}" for ext_id, _ in match_ids]
+
+    # Esegui tutte le chiamate in parallelo
+    all_results = asyncio.run(api_request_batch(endpoints, description="dettagli partite"))
+
+    # Processa i risultati
+    print(f"  💾 Processando risultati...")
+    total_events = 0
+    total_lineups = 0
+    total_stats = 0
+
+    for (external_id, internal_id), data in zip(match_ids, all_results):
+        events, lineups, stats = process_match_detail(supabase, data, internal_id, team_map, player_map)
+        total_events += events
+        total_lineups += lineups
+        total_stats += stats
 
     print(f"  ✅ Sincronizzati {total_events} eventi, {total_lineups} formazioni, {total_stats} statistiche")
 
@@ -614,7 +722,7 @@ def sync_match_details(supabase: Client, match_ids: list, team_map: dict, player
 def sync_player_stats(supabase: Client, player_map: dict, competition_code: str, season: str, filter_player_ids: set = None):
     """
     Sincronizza statistiche aggregate giocatori da API /persons/{id}/matches.
-    Questa è la fonte più accurata per minutes_played, matches_played, yellow_cards.
+    USA PARALLELIZZAZIONE per velocizzare il sync (batch di 25 richieste).
 
     NOTA: Chiama l'API SENZA filtro competizione per ottenere i totali stagionali.
     Le statistiche per singola competizione sono calcolate dalle viste (player_season_cards).
@@ -623,26 +731,34 @@ def sync_player_stats(supabase: Client, player_map: dict, competition_code: str,
         filter_player_ids: Se specificato, sincronizza solo questi external_id (modalità incrementale)
     """
     if filter_player_ids:
-        print(f"\n📊 Sincronizzazione statistiche giocatori (incrementale: {len(filter_player_ids)} giocatori)...")
-        # Filtra player_map per includere solo i giocatori specificati
         player_items = [(ext_id, int_id) for ext_id, int_id in player_map.items() if ext_id in filter_player_ids]
+        mode = f"INCREMENTALE ({len(filter_player_ids)} giocatori)"
     else:
-        print("\n📊 Sincronizzazione statistiche giocatori (API Person)...")
         player_items = list(player_map.items())
+        mode = "COMPLETA"
+
+    if not player_items:
+        print("  ⚠️ Nessun giocatore da sincronizzare")
+        return 0
 
     api_season = season.split("-")[0]
+
+    print(f"\n{'='*60}")
+    print(f"📊 SYNC STATISTICHE GIOCATORI - Modalità {mode}")
+    print(f"{'='*60}")
+
+    # Costruisci lista di endpoint
+    endpoints = [f"/persons/{ext_id}/matches?season={api_season}&limit=100" for ext_id, _ in player_items]
+
+    # Esegui tutte le chiamate in parallelo (con batch per rate limit)
+    all_results = asyncio.run(api_request_batch(endpoints, description="statistiche giocatori"))
+
+    # Processa i risultati e salva nel database
+    print(f"  💾 Salvataggio risultati nel database...")
     total_synced = 0
     total_skipped = 0
 
-    total_players = len(player_items)
-
-    for i, (external_id, internal_id) in enumerate(player_items):
-        if (i + 1) % 50 == 0 or i == 0:
-            print(f"  [{i+1}/{total_players}] Sincronizzazione statistiche giocatori...")
-
-        # Chiama API Person per statistiche aggregate (TUTTE le competizioni per avere totali stagionali)
-        data = api_request(f"/persons/{external_id}/matches?season={api_season}&limit=100")
-
+    for i, ((external_id, internal_id), data) in enumerate(zip(player_items, all_results)):
         if not data:
             total_skipped += 1
             continue
