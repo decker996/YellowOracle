@@ -1,7 +1,7 @@
 # YellowOracle - Stato del Progetto
 
-**Ultimo aggiornamento:** 2026-01-26 14:30
-**Fase attuale:** Alpha - Interfaccia Claude Code attiva, La Liga sincronizzata
+**Ultimo aggiornamento:** 2026-01-26 21:30
+**Fase attuale:** Alpha v2 - Analisi potenziata con flusso a 3 fasi e metriche falli
 
 ---
 
@@ -64,7 +64,7 @@ Sistema di analisi cartellini per scommesse calcistiche. Analizza:
 | `get_team_players` | Giocatori di una squadra | team_name, season? |
 | `get_match_statistics` | Falli, possesso, tiri | team_name?, season?, limit? |
 | `get_matches_by_date` | Partite per data | competition?, date?, days_ahead? |
-| `analyze_match_risk` | Analisi con score pesato (40/35/25) | home_team, away_team, referee? |
+| `analyze_match_risk` | Analisi con score pesato (35/30/15/20) | home_team, away_team, referee? |
 
 ---
 
@@ -246,6 +246,16 @@ Analizza le partite di Serie A di domani
 ---
 
 ## Cronologia Sessioni
+
+### 2026-01-26 (Sessione 3 - Sera)
+- **Analisi Potenziata v2:**
+  - Nuovo flusso a 3 fasi: Fase 0 (ricerca web formazioni/arbitro), Fase 1 (dati MCP), Fase 2 (contesto web)
+  - Metriche falli integrate nel calcolo score
+  - Nuovi pesi: 35% stagionale, 30% arbitro, 15% H2H, 20% falli
+  - Vista SQL `team_fouls_stats` per statistiche falli squadra
+  - `CLAUDE.md` riscritto con template output discorsivo + glossario
+  - Fix bug `get_match_statistics` (team_side → team_id)
+  - Design doc: `docs/plans/2026-01-26-enhanced-analysis-design.md`
 
 ### 2026-01-26 (Sessione 2 - Pomeriggio)
 - **Alpha implementata:**

@@ -517,8 +517,87 @@ ORDER BY psc.yellows_per_90 DESC NULLS LAST;
 
 
 -- ============================================
+-- VISTA 5: Statistiche falli per squadra
+-- Usata per calcolare il fattore "squadra fallosa" nel rischio cartellino
+-- ============================================
+
+DROP VIEW IF EXISTS team_fouls_stats CASCADE;
+
+CREATE VIEW team_fouls_stats AS
+SELECT
+    t.id AS team_id,
+    t.name AS team_name,
+    t.short_name AS team_short,
+    m.season,
+    COUNT(DISTINCT m.id) AS matches_played,
+    -- Falli totali
+    SUM(ms.fouls_committed) AS total_fouls_committed,
+    SUM(ms.fouls_suffered) AS total_fouls_suffered,
+    -- Cartellini totali squadra
+    SUM(ms.yellow_cards) AS total_yellows,
+    SUM(ms.red_cards) AS total_reds,
+    -- Medie per partita
+    ROUND(AVG(ms.fouls_committed)::NUMERIC, 1) AS avg_fouls_per_match,
+    ROUND(AVG(ms.fouls_suffered)::NUMERIC, 1) AS avg_fouls_suffered_per_match,
+    ROUND(AVG(ms.yellow_cards)::NUMERIC, 2) AS avg_yellows_per_match,
+    -- Rapporto falli -> cartellino (squadra)
+    CASE
+        WHEN SUM(ms.fouls_committed) > 0 THEN
+            ROUND((SUM(ms.yellow_cards)::NUMERIC / SUM(ms.fouls_committed)::NUMERIC) * 100, 1)
+        ELSE 0
+    END AS foul_to_card_pct
+FROM teams t
+JOIN match_statistics ms ON ms.team_id = t.id
+JOIN matches m ON ms.match_id = m.id
+WHERE m.status = 'FINISHED'
+GROUP BY t.id, t.name, t.short_name, m.season
+ORDER BY m.season DESC, avg_fouls_per_match DESC;
+
+
+-- ============================================
+-- FUNZIONE: get_team_fouls_stats
+-- Restituisce statistiche falli per una o più squadre
+-- ============================================
+
+DROP FUNCTION IF EXISTS get_team_fouls_stats(TEXT, TEXT);
+
+CREATE OR REPLACE FUNCTION get_team_fouls_stats(
+    p_team_name TEXT DEFAULT NULL,
+    p_season TEXT DEFAULT '2025-2026'
+)
+RETURNS TABLE (
+    team_name TEXT,
+    matches_played BIGINT,
+    avg_fouls_per_match NUMERIC,
+    avg_fouls_suffered_per_match NUMERIC,
+    avg_yellows_per_match NUMERIC,
+    foul_to_card_pct NUMERIC
+)
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    RETURN QUERY
+    SELECT
+        tfs.team_name::TEXT,
+        tfs.matches_played,
+        tfs.avg_fouls_per_match,
+        tfs.avg_fouls_suffered_per_match,
+        tfs.avg_yellows_per_match,
+        tfs.foul_to_card_pct
+    FROM team_fouls_stats tfs
+    WHERE tfs.season = p_season
+    AND (p_team_name IS NULL OR LOWER(tfs.team_name) LIKE '%' || LOWER(p_team_name) || '%')
+    ORDER BY tfs.avg_fouls_per_match DESC;
+END;
+$$;
+
+
+-- ============================================
 -- COMMENTI E DOCUMENTAZIONE
 -- ============================================
+
+COMMENT ON VIEW team_fouls_stats IS 'Statistiche falli aggregate per squadra/stagione. Usata per calcolare fattore squadra fallosa.';
+COMMENT ON FUNCTION get_team_fouls_stats IS 'Restituisce statistiche falli per squadra. Params: team_name (opt), season (opt)';
 
 COMMENT ON VIEW player_season_cards IS 'Statistiche cartellini per giocatore/stagione/competizione (separati per CL, campionato, etc.)';
 COMMENT ON VIEW player_season_cards_total IS 'Statistiche cartellini per giocatore/stagione aggregate (tutte le competizioni insieme)';

@@ -342,7 +342,7 @@ def get_match_statistics(team_name: str = None, season: str = "2025-2026", limit
         if team_name:
             # Dobbiamo fare due query separate per home e away
             home_result = supabase.table("match_statistics").select(
-                "team_side, ball_possession, fouls_committed, fouls_suffered, "
+                "team_id, ball_possession, fouls_committed, fouls_suffered, "
                 "total_shots, shots_on_goal, shots_off_goal, corner_kicks, "
                 "yellow_cards, red_cards, saves, offsides, "
                 "matches!inner(match_date, season, "
@@ -353,7 +353,7 @@ def get_match_statistics(team_name: str = None, season: str = "2025-2026", limit
             ).order("matches(match_date)", desc=True).limit(limit).execute()
 
             away_result = supabase.table("match_statistics").select(
-                "team_side, ball_possession, fouls_committed, fouls_suffered, "
+                "team_id, ball_possession, fouls_committed, fouls_suffered, "
                 "total_shots, shots_on_goal, shots_off_goal, corner_kicks, "
                 "yellow_cards, red_cards, saves, offsides, "
                 "matches!inner(match_date, season, "
@@ -399,7 +399,8 @@ def get_match_statistics(team_name: str = None, season: str = "2025-2026", limit
 def analyze_match_risk(home_team: str, away_team: str, referee: str = None) -> str:
     """
     Analizza il rischio cartellino per una partita specifica.
-    Combina 3 fattori con pesi: stagionale (40%), arbitro (35%), H2H (25%).
+    Combina 4 fattori con pesi: stagionale (35%), arbitro (30%), H2H (15%), falli (20%).
+    Senza arbitro: stagionale (45%), H2H (25%), falli (30%).
 
     Args:
         home_team: Squadra di casa
@@ -407,28 +408,36 @@ def analyze_match_risk(home_team: str, away_team: str, referee: str = None) -> s
         referee: Nome arbitro (opzionale)
 
     Returns:
-        Analisi completa con top 3 giocatori a rischio per squadra e breakdown score
+        Analisi completa con top 5 giocatori a rischio per squadra e breakdown score
     """
     supabase = get_supabase()
 
     analysis = {
         "match": f"{home_team} vs {away_team}",
         "referee": referee or "Non designato",
+        "referee_stats": None,
         "referee_note": None,
-        "home_team_top3": [],
-        "away_team_top3": [],
-        "overall_top3": []
+        "team_stats": {},
+        "home_team_top5": [],
+        "away_team_top5": [],
+        "overall_top5": []
     }
 
-    # Pesi per il calcolo dello score
-    WEIGHT_SEASONAL = 0.40
-    WEIGHT_REFEREE = 0.35
-    WEIGHT_H2H = 0.25
+    # Pesi per il calcolo dello score (con arbitro)
+    WEIGHT_SEASONAL = 0.35
+    WEIGHT_REFEREE = 0.30
+    WEIGHT_H2H = 0.15
+    WEIGHT_FOULS = 0.20
+    # Pesi senza arbitro
+    WEIGHT_SEASONAL_NO_REF = 0.45
+    WEIGHT_H2H_NO_REF = 0.25
+    WEIGHT_FOULS_NO_REF = 0.30
+
     DEFAULT_REFEREE_SCORE = 25  # Fallback conservativo quando non c'è storico con arbitro
-    H2H_THRESHOLD = 30  # Soglia seasonal_score per query H2H (ottimizzazione)
+    H2H_THRESHOLD = 25  # Soglia seasonal_score per query H2H (ottimizzazione)
 
     try:
-        # --- DATI STAGIONALI ---
+        # --- DATI STAGIONALI GIOCATORI ---
         home_result = supabase.table("player_season_cards").select("*").ilike(
             "team_name", f"%{home_team}%"
         ).eq("season", "2025-2026").order("yellow_cards", desc=True).limit(15).execute()
@@ -437,9 +446,38 @@ def analyze_match_risk(home_team: str, away_team: str, referee: str = None) -> s
             "team_name", f"%{away_team}%"
         ).eq("season", "2025-2026").order("yellow_cards", desc=True).limit(15).execute()
 
+        # --- STATISTICHE FALLI SQUADRA ---
+        team_fouls = {}
+        for team in [home_team, away_team]:
+            try:
+                fouls_result = supabase.rpc(
+                    "get_team_fouls_stats",
+                    {"p_team_name": team, "p_season": "2025-2026"}
+                ).execute()
+                if fouls_result.data and len(fouls_result.data) > 0:
+                    tf = fouls_result.data[0]
+                    team_fouls[team.lower()] = {
+                        "avg_fouls_per_match": float(tf.get("avg_fouls_per_match") or 0),
+                        "avg_yellows_per_match": float(tf.get("avg_yellows_per_match") or 0),
+                        "foul_to_card_pct": float(tf.get("foul_to_card_pct") or 0)
+                    }
+            except Exception:
+                pass  # Team fouls query failed, continue without
+
+        analysis["team_stats"] = team_fouls
+
         # --- DATI ARBITRO (se disponibile) ---
         referee_data = {}
         if referee:
+            # Statistiche generali arbitro
+            ref_stats = supabase.table("referees").select(
+                "name, total_matches, total_yellows, avg_yellows_per_match"
+            ).ilike("name", f"%{referee}%").limit(1).execute()
+
+            if ref_stats.data and len(ref_stats.data) > 0:
+                analysis["referee_stats"] = ref_stats.data[0]
+
+            # Storico arbitro-giocatori
             ref_result = supabase.rpc(
                 "get_referee_player_cards",
                 {
@@ -462,15 +500,19 @@ def analyze_match_risk(home_team: str, away_team: str, referee: str = None) -> s
         all_players = []
 
         for team_data, team_name in [(home_result.data or [], home_team), (away_result.data or [], away_team)]:
+            # Recupera stats falli squadra
+            team_fouls_data = team_fouls.get(team_name.lower(), {})
+            team_foul_to_card = team_fouls_data.get("foul_to_card_pct", 0)
+
             for p in team_data:
                 player_name = p.get("player_name", "")
                 player_name_lower = player_name.lower()
 
-                # 1. SEASONAL SCORE (40%)
+                # 1. SEASONAL SCORE (35%)
                 yellows_per_90 = float(p.get("yellows_per_90") or 0)
                 seasonal_score = min(yellows_per_90 * 100, 100)
 
-                # 2. REFEREE SCORE (35%)
+                # 2. REFEREE SCORE (30%)
                 referee_score = 0
                 referee_info = None
                 if referee and player_name_lower in referee_data:
@@ -481,7 +523,7 @@ def analyze_match_risk(home_team: str, away_team: str, referee: str = None) -> s
                     # Nessuno storico con arbitro
                     referee_score = DEFAULT_REFEREE_SCORE
 
-                # 3. H2H SCORE (25%) - query per i top candidati
+                # 3. H2H SCORE (15%) - query per i top candidati
                 h2h_score = 0
                 h2h_info = None
                 if seasonal_score > H2H_THRESHOLD:
@@ -505,31 +547,46 @@ def analyze_match_risk(home_team: str, away_team: str, referee: str = None) -> s
                     except Exception:
                         pass  # H2H query failed, continue without H2H data
 
+                # 4. FOULS SCORE (20%) - basato su falli squadra e ruolo
+                # Calcolo: (foul_to_card% squadra * 0.5) + (yellows_per_90 normalizzato * 0.5)
+                # Centrocampisti difensivi e difensori hanno bonus
+                position = p.get("position", "")
+                position_multiplier = 1.0
+                if position in ["Midfield", "Defence"]:
+                    position_multiplier = 1.2  # +20% per ruoli più fallosi
+
+                fouls_score = (
+                    (team_foul_to_card * 0.5) +  # Quanto la squadra trasforma falli in cartellini
+                    (min(yellows_per_90 * 50, 50))  # Propensione individuale
+                ) * position_multiplier
+                fouls_score = min(fouls_score, 100)
+
                 # SCORE COMBINATO
                 if referee:
                     combined_score = (
                         seasonal_score * WEIGHT_SEASONAL +
                         referee_score * WEIGHT_REFEREE +
-                        h2h_score * WEIGHT_H2H
+                        h2h_score * WEIGHT_H2H +
+                        fouls_score * WEIGHT_FOULS
                     )
                 else:
-                    # Senza arbitro: ricalibra pesi (seasonal 62%, h2h 38%)
                     combined_score = (
-                        seasonal_score * 0.62 +
-                        h2h_score * 0.38
+                        seasonal_score * WEIGHT_SEASONAL_NO_REF +
+                        h2h_score * WEIGHT_H2H_NO_REF +
+                        fouls_score * WEIGHT_FOULS_NO_REF
                     )
 
                 player_data = {
                     "name": player_name,
                     "team": p.get("team_name"),
-                    "position": p.get("position"),
+                    "position": position,
                     "combined_score": round(combined_score, 1),
                     "breakdown": {
                         "seasonal": {
                             "score": round(seasonal_score, 1),
                             "yellows": p.get("yellow_cards", 0),
                             "matches": p.get("matches_played", 0),
-                            "per_90": yellows_per_90
+                            "per_90": round(yellows_per_90, 2)
                         },
                         "referee": {
                             "score": round(referee_score, 1),
@@ -538,6 +595,11 @@ def analyze_match_risk(home_team: str, away_team: str, referee: str = None) -> s
                         "h2h": {
                             "score": round(h2h_score, 1),
                             "detail": h2h_info
+                        },
+                        "fouls": {
+                            "score": round(fouls_score, 1),
+                            "team_foul_to_card_pct": round(team_foul_to_card, 1),
+                            "position_multiplier": position_multiplier
                         }
                     }
                 }
@@ -546,16 +608,16 @@ def analyze_match_risk(home_team: str, away_team: str, referee: str = None) -> s
         # Ordina per score combinato
         all_players.sort(key=lambda x: x["combined_score"], reverse=True)
 
-        # Separa per squadra e prendi top 3
+        # Separa per squadra e prendi top 5
         home_players = [p for p in all_players if home_team.lower() in p["team"].lower()]
         away_players = [p for p in all_players if away_team.lower() in p["team"].lower()]
 
-        analysis["home_team_top3"] = home_players[:3]
-        analysis["away_team_top3"] = away_players[:3]
-        analysis["overall_top3"] = all_players[:3]
+        analysis["home_team_top5"] = home_players[:5]
+        analysis["away_team_top5"] = away_players[:5]
+        analysis["overall_top5"] = all_players[:5]
 
         if not referee:
-            analysis["referee_note"] = "Arbitro non designato - analisi basata su dati stagionali e H2H"
+            analysis["referee_note"] = "Arbitro non designato - analisi basata su dati stagionali, H2H e falli"
 
         return json.dumps(analysis, indent=2, default=str, ensure_ascii=False)
 
