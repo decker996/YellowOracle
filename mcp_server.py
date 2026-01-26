@@ -45,9 +45,18 @@ def get_matches_by_date(competition: str = "SA", date: str = None, days_ahead: i
     if not FOOTBALL_API_KEY:
         return "Errore: FOOTBALL_API_KEY non configurata"
 
-    # Calcola la data
+    # Validazione competizione
+    VALID_COMPETITIONS = {"SA", "PL", "BL1", "PD", "FL1", "CL", "EL"}
+    if competition not in VALID_COMPETITIONS:
+        return f"Errore: Competizione '{competition}' non valida. Usa: {', '.join(sorted(VALID_COMPETITIONS))}"
+
+    # Calcola e valida la data
     if date:
-        target_date = date
+        try:
+            datetime.strptime(date, "%Y-%m-%d")
+            target_date = date
+        except ValueError:
+            return "Errore: Formato data non valido. Usa YYYY-MM-DD (es: 2026-02-01)"
     else:
         target_date = (datetime.now() + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
 
