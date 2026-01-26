@@ -22,6 +22,7 @@ DROP FUNCTION IF EXISTS get_head_to_head_cards(TEXT, TEXT, TEXT);
 
 -- ============================================
 -- VISTA 1: Statistiche cartellini per giocatore/stagione/competizione
+-- FIX: ora parte da lineups per contare TUTTE le partite giocate
 -- ============================================
 
 CREATE VIEW player_season_cards AS
@@ -39,7 +40,7 @@ SELECT
     COUNT(DISTINCT m.id) AS matches_played,
     COUNT(CASE WHEN me.event_type = 'YELLOW_CARD' THEN 1 END) AS yellow_cards,
     COUNT(CASE WHEN me.event_type = 'RED_CARD' THEN 1 END) AS red_cards,
-    -- Minuti totali dalla tabella lineups (se disponibili)
+    -- Minuti totali dalla tabella lineups
     COALESCE(SUM(l.minutes_played), COUNT(DISTINCT m.id) * 90) AS minutes_played,
     -- Media cartellini gialli per 90 minuti
     CASE
@@ -51,19 +52,22 @@ SELECT
             )
         ELSE NULL
     END AS yellows_per_90
-FROM players p
-JOIN match_events me ON p.id = me.player_id
-JOIN matches m ON me.match_id = m.id
-JOIN teams t ON me.team_id = t.id
+FROM lineups l
+JOIN players p ON l.player_id = p.id
+JOIN matches m ON l.match_id = m.id
+JOIN teams t ON l.team_id = t.id
 LEFT JOIN competitions c ON m.competition_id = c.id
-LEFT JOIN lineups l ON l.player_id = p.id AND l.match_id = m.id
-WHERE me.event_type IN ('YELLOW_CARD', 'RED_CARD')
+LEFT JOIN match_events me ON me.player_id = p.id
+    AND me.match_id = m.id
+    AND me.event_type IN ('YELLOW_CARD', 'RED_CARD')
+WHERE m.status = 'FINISHED'
 GROUP BY p.id, p.name, p.position, t.id, t.name, t.short_name, c.id, c.code, c.name, m.season
 ORDER BY m.season DESC, yellow_cards DESC;
 
 
 -- ============================================
 -- VISTA 1B: Statistiche AGGREGATE (tutte le competizioni insieme)
+-- FIX: ora parte da lineups per contare TUTTE le partite giocate
 -- ============================================
 
 CREATE VIEW player_season_cards_total AS
@@ -88,15 +92,17 @@ SELECT
             )
         ELSE NULL
     END AS yellows_per_90,
-    -- Lista competizioni con cartellini
+    -- Lista competizioni giocate
     STRING_AGG(DISTINCT c.code, ', ') AS competitions
-FROM players p
-JOIN match_events me ON p.id = me.player_id
-JOIN matches m ON me.match_id = m.id
-JOIN teams t ON me.team_id = t.id
+FROM lineups l
+JOIN players p ON l.player_id = p.id
+JOIN matches m ON l.match_id = m.id
+JOIN teams t ON l.team_id = t.id
 LEFT JOIN competitions c ON m.competition_id = c.id
-LEFT JOIN lineups l ON l.player_id = p.id AND l.match_id = m.id
-WHERE me.event_type IN ('YELLOW_CARD', 'RED_CARD')
+LEFT JOIN match_events me ON me.player_id = p.id
+    AND me.match_id = m.id
+    AND me.event_type IN ('YELLOW_CARD', 'RED_CARD')
+WHERE m.status = 'FINISHED'
 GROUP BY p.id, p.name, p.position, t.id, t.name, t.short_name, m.season
 ORDER BY m.season DESC, yellow_cards DESC;
 
