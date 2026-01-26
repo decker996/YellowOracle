@@ -23,9 +23,9 @@ on:
         default: '2025-2026'
         type: string
 
-  # Schedule automatico: ogni martedì alle 06:00 ora italiana (05:00 UTC)
-  schedule:
-    - cron: '0 5 * * 2'
+  # Schedule automatico: DISATTIVATO (riattivare decommentando)
+  # schedule:
+  #   - cron: '0 5 * * 2'
 
 env:
   SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
