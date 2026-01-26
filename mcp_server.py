@@ -7,6 +7,8 @@ Avvio: python mcp_server.py
 
 import os
 import json
+import requests
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 from supabase import create_client, Client
@@ -23,6 +25,95 @@ mcp = FastMCP("YellowOracle")
 def get_supabase() -> Client:
     """Crea connessione a Supabase."""
     return create_client(SUPABASE_URL, SUPABASE_KEY)
+
+
+@mcp.tool()
+def get_matches_by_date(competition: str = "SA", date: str = None, days_ahead: int = 0) -> str:
+    """
+    Recupera le partite di una competizione per una data specifica.
+    Utile per analizzare tutte le partite di una giornata.
+
+    Args:
+        competition: Codice competizione (SA, PL, BL1, PD, FL1, CL, EL). Default: SA (Serie A)
+        date: Data in formato "YYYY-MM-DD". Se None, usa oggi + days_ahead
+        days_ahead: Giorni da oggi (usato se date è None). Default: 0 (oggi)
+
+    Returns:
+        Lista partite con: squadre, orario, arbitro (se designato), stadio
+    """
+    FOOTBALL_API_KEY = os.getenv("FOOTBALL_API_KEY")
+    if not FOOTBALL_API_KEY:
+        return "Errore: FOOTBALL_API_KEY non configurata"
+
+    # Calcola la data
+    if date:
+        target_date = date
+    else:
+        target_date = (datetime.now() + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
+
+    # Mapping competizioni
+    comp_names = {
+        "SA": "Serie A",
+        "PL": "Premier League",
+        "BL1": "Bundesliga",
+        "PD": "La Liga",
+        "FL1": "Ligue 1",
+        "CL": "UEFA Champions League",
+        "EL": "UEFA Europa League"
+    }
+
+    url = f"https://api.football-data.org/v4/competitions/{competition}/matches"
+    params = {"dateFrom": target_date, "dateTo": target_date}
+    headers = {"X-Auth-Token": FOOTBALL_API_KEY}
+
+    try:
+        response = requests.get(url, params=params, headers=headers)
+        if response.status_code != 200:
+            return f"Errore API: {response.status_code} - {response.text[:200]}"
+
+        data = response.json()
+        matches = data.get("matches", [])
+
+        if not matches:
+            return json.dumps({
+                "competition": comp_names.get(competition, competition),
+                "date": target_date,
+                "matches": [],
+                "message": "Nessuna partita in questa data"
+            }, indent=2)
+
+        result = {
+            "competition": comp_names.get(competition, competition),
+            "date": target_date,
+            "matches": []
+        }
+
+        for match in matches:
+            # Estrai arbitro principale
+            referee_name = None
+            for ref in match.get("referees", []):
+                if ref.get("type") == "REFEREE":
+                    referee_name = ref.get("name")
+                    break
+
+            # Formatta orario
+            utc_date = match.get("utcDate", "")
+            kickoff = utc_date[11:16] if len(utc_date) > 16 else "TBD"
+
+            result["matches"].append({
+                "home_team": match.get("homeTeam", {}).get("name"),
+                "away_team": match.get("awayTeam", {}).get("name"),
+                "kickoff": kickoff,
+                "stadium": match.get("venue"),
+                "referee": referee_name,
+                "matchday": match.get("matchday"),
+                "status": match.get("status")
+            })
+
+        return json.dumps(result, indent=2, ensure_ascii=False)
+
+    except Exception as e:
+        return f"Errore: {str(e)}"
 
 
 @mcp.tool()
