@@ -1,0 +1,100 @@
+name: YellowOracle Sync
+
+on:
+  # Trigger manuale con parametri
+  workflow_dispatch:
+    inputs:
+      competitions:
+        description: 'Competizioni da sincronizzare (spazio separato)'
+        required: false
+        default: 'SA PL PD BL1 FL1 CL EL'
+        type: string
+      sync_type:
+        description: 'Tipo di sincronizzazione'
+        required: true
+        default: 'weekly'
+        type: choice
+        options:
+          - weekly
+          - full
+      days:
+        description: 'Giorni da sincronizzare (solo per weekly)'
+        required: false
+        default: '7'
+        type: string
+
+  # Schedule automatico: ogni lunedi alle 6:00 UTC
+  schedule:
+    - cron: '0 6 * * 1'
+
+env:
+  SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+  SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+  FOOTBALL_API_KEY: ${{ secrets.FOOTBALL_API_KEY }}
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360  # 6 ore max
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run sync (manual trigger)
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          COMPETITIONS="${{ github.event.inputs.competitions }}"
+          SYNC_TYPE="${{ github.event.inputs.sync_type }}"
+          DAYS="${{ github.event.inputs.days }}"
+
+          echo "=== YellowOracle Sync ==="
+          echo "Competizioni: $COMPETITIONS"
+          echo "Tipo: $SYNC_TYPE"
+          echo "Giorni: $DAYS"
+          echo "========================="
+
+          for COMP in $COMPETITIONS; do
+            echo ""
+            echo ">>> Sincronizzazione $COMP..."
+
+            if [ "$SYNC_TYPE" = "full" ]; then
+              python scripts/sync_football_data.py --competition "$COMP" --all-seasons --full
+            else
+              # Weekly sync: usa --days se disponibile, altrimenti stagione corrente
+              python scripts/sync_football_data.py --competition "$COMP" --season 2025-2026 --full
+            fi
+          done
+
+      - name: Run sync (scheduled)
+        if: github.event_name == 'schedule'
+        run: |
+          echo "=== YellowOracle Weekly Sync (Scheduled) ==="
+
+          COMPETITIONS="SA PL PD BL1 FL1 CL EL"
+
+          for COMP in $COMPETITIONS; do
+            echo ""
+            echo ">>> Sincronizzazione $COMP..."
+            python scripts/sync_football_data.py --competition "$COMP" --season 2025-2026 --full
+          done
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "### Sync Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Trigger:** ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Status:** ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Time:** $(date)" >> $GITHUB_STEP_SUMMARY
