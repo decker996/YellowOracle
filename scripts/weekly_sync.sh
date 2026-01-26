@@ -1,7 +1,10 @@
 #!/bin/bash
 # YellowOracle - Script di sincronizzazione settimanale
-# Esegui manualmente: ./scripts/weekly_sync.sh [COMPETITION]
-# Esempio: ./scripts/weekly_sync.sh PD
+# Esegui manualmente: ./scripts/weekly_sync.sh [COMPETITIONS]
+# Esempi:
+#   ./scripts/weekly_sync.sh              # Tutte le competizioni
+#   ./scripts/weekly_sync.sh "SA PL"      # Solo Serie A e Premier
+#   ./scripts/weekly_sync.sh SA           # Solo Serie A
 # Configura cron: crontab -e
 
 # Configurazione
@@ -11,8 +14,9 @@ SYNC_SCRIPT="$PROJECT_DIR/scripts/sync_football_data.py"
 LOG_DIR="$PROJECT_DIR/logs"
 LOG_FILE="$LOG_DIR/sync_$(date +%Y%m%d_%H%M%S).log"
 
-# Competizione di default (può essere sovrascritta con argomento)
-COMPETITION="${1:-PD}"
+# Competizioni di default (tutte)
+ALL_COMPETITIONS="SA PL PD BL1 FL1 CL EL"
+COMPETITIONS="${1:-$ALL_COMPETITIONS}"
 
 # Crea directory log se non esiste
 mkdir -p "$LOG_DIR"
@@ -25,7 +29,7 @@ log() {
 # Inizio
 log "=========================================="
 log "Inizio sincronizzazione YellowOracle"
-log "Competizione: $COMPETITION"
+log "Competizioni: $COMPETITIONS"
 log "=========================================="
 
 # Vai nella directory del progetto
@@ -40,24 +44,40 @@ if [ ! -f "$VENV_PYTHON" ]; then
     exit 1
 fi
 
-# Esegui sincronizzazione solo stagione corrente (più veloce per update settimanale)
-log "Sincronizzazione stagione corrente (2025-2026)..."
-$VENV_PYTHON "$SYNC_SCRIPT" --competition "$COMPETITION" --season 2025-2026 --full 2>&1 | tee -a "$LOG_FILE"
+# Contatori
+TOTAL=0
+SUCCESS=0
+FAILED=0
 
-SYNC_EXIT_CODE=${PIPESTATUS[0]}
+# Loop su tutte le competizioni
+for COMP in $COMPETITIONS; do
+    TOTAL=$((TOTAL + 1))
+    log ""
+    log "--- Sincronizzazione $COMP ---"
 
-if [ $SYNC_EXIT_CODE -eq 0 ]; then
-    log "Sincronizzazione completata con successo"
-else
-    log "ERRORE: Sincronizzazione fallita (exit code: $SYNC_EXIT_CODE)"
-fi
+    $VENV_PYTHON "$SYNC_SCRIPT" --competition "$COMP" --season 2025-2026 --full 2>&1 | tee -a "$LOG_FILE"
+
+    SYNC_EXIT_CODE=${PIPESTATUS[0]}
+
+    if [ $SYNC_EXIT_CODE -eq 0 ]; then
+        log "✅ $COMP completato"
+        SUCCESS=$((SUCCESS + 1))
+    else
+        log "❌ $COMP fallito (exit code: $SYNC_EXIT_CODE)"
+        FAILED=$((FAILED + 1))
+    fi
+done
 
 # Pulizia log vecchi (mantieni ultimi 30 giorni)
+log ""
 log "Pulizia log vecchi..."
 find "$LOG_DIR" -name "sync_*.log" -mtime +30 -delete 2>/dev/null
 
+# Riepilogo
+log ""
 log "=========================================="
 log "Fine sincronizzazione"
+log "Totale: $TOTAL | Successo: $SUCCESS | Falliti: $FAILED"
 log "=========================================="
 
 # Mostra riepilogo
@@ -65,4 +85,8 @@ echo ""
 echo "Log salvato in: $LOG_FILE"
 echo "Per vedere i log recenti: ls -la $LOG_DIR"
 
-exit $SYNC_EXIT_CODE
+# Exit con errore se almeno una sync è fallita
+if [ $FAILED -gt 0 ]; then
+    exit 1
+fi
+exit 0
