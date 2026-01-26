@@ -15,6 +15,7 @@ DROP TABLE IF EXISTS matches;
 DROP TABLE IF EXISTS players;
 DROP TABLE IF EXISTS referees;
 DROP TABLE IF EXISTS teams;
+DROP TABLE IF EXISTS competitions;
 
 -- Abilita UUID
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
@@ -22,6 +23,20 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 -- ============================================
 -- TABELLE PRINCIPALI
 -- ============================================
+
+-- Tabella Competizioni
+CREATE TABLE competitions (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    external_id INTEGER UNIQUE,  -- ID da football-data.org
+    code VARCHAR(10) UNIQUE NOT NULL,  -- PD, SA, BL1, PL, FL1
+    name VARCHAR(100) NOT NULL,
+    area_name VARCHAR(50),  -- Spain, Italy, Germany, etc.
+    area_code VARCHAR(5),   -- ESP, ITA, GER, etc.
+    emblem_url TEXT,
+    plan VARCHAR(20),  -- TIER_ONE, TIER_TWO, etc.
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
 
 -- Tabella Squadre
 CREATE TABLE teams (
@@ -72,6 +87,7 @@ CREATE TABLE referees (
 CREATE TABLE matches (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     external_id INTEGER UNIQUE,  -- ID da football-data.org
+    competition_id UUID REFERENCES competitions(id),  -- Competizione (PD, SA, etc.)
     season VARCHAR(10) NOT NULL,  -- es. "2024-2025"
     matchday INTEGER,
     match_date TIMESTAMP WITH TIME ZONE NOT NULL,
@@ -88,8 +104,9 @@ CREATE TABLE matches (
     away_score_halftime INTEGER,
     winner VARCHAR(20),  -- HOME_TEAM, AWAY_TEAM, DRAW
 
-    -- Arbitro
+    -- Arbitri
     referee_id UUID REFERENCES referees(id),
+    var_referee_id UUID REFERENCES referees(id),  -- Video Assistant Referee
 
     -- Metadati partita
     is_derby BOOLEAN DEFAULT FALSE,
@@ -250,6 +267,7 @@ CREATE INDEX idx_matches_status ON matches(status);
 CREATE INDEX idx_matches_home_team ON matches(home_team_id);
 CREATE INDEX idx_matches_away_team ON matches(away_team_id);
 CREATE INDEX idx_matches_referee ON matches(referee_id);
+CREATE INDEX idx_matches_competition ON matches(competition_id);
 
 CREATE INDEX idx_match_events_match ON match_events(match_id);
 CREATE INDEX idx_match_events_player ON match_events(player_id);

@@ -1,6 +1,21 @@
 """
 YellowOracle - Sincronizzazione dati da football-data.org
-Uso: python scripts/sync_football_data.py --season 2024-2025
+
+Uso:
+    # Singola competizione e stagione
+    python scripts/sync_football_data.py --competition PD --season 2024-2025
+
+    # Tutte le stagioni per una competizione
+    python scripts/sync_football_data.py --competition SA --all --full
+
+    # Multiple competizioni
+    python scripts/sync_football_data.py --competitions PD,SA,BL1 --season 2025-2026
+
+    # Tutte le competizioni configurate
+    python scripts/sync_football_data.py --all-competitions --season 2025-2026
+
+Competizioni supportate: PD (La Liga), SA (Serie A), BL1 (Bundesliga),
+                         PL (Premier League), FL1 (Ligue 1)
 
 Richiede piano "Free + Deep Data" (€29/mese) + "Statistics Add-On" (€15/mese)
 """
@@ -25,10 +40,26 @@ FOOTBALL_API_KEY = os.getenv("FOOTBALL_API_KEY")
 
 # Configurazione API
 API_BASE = "https://api.football-data.org/v4"
-COMPETITION_CODE = "PD"  # La Liga (Primera Division)
+
+# Competizioni supportate
+COMPETITIONS = {
+    'PD': {'name': 'La Liga', 'area': 'Spain', 'area_code': 'ESP'},
+    'SA': {'name': 'Serie A', 'area': 'Italy', 'area_code': 'ITA'},
+    'BL1': {'name': 'Bundesliga', 'area': 'Germany', 'area_code': 'GER'},
+    'PL': {'name': 'Premier League', 'area': 'England', 'area_code': 'ENG'},
+    'FL1': {'name': 'Ligue 1', 'area': 'France', 'area_code': 'FRA'},
+}
 
 # Rate limiting: 30 chiamate/minuto con piano a pagamento
 RATE_LIMIT_DELAY = 2.5  # secondi tra le chiamate
+
+# Stagioni supportate (piano Free + Deep Data: ultime 3 stagioni)
+# Nota: stagioni più vecchie richiedono piano superiore
+ALL_SEASONS = [
+    "2023-2024",
+    "2024-2025",
+    "2025-2026",
+]
 
 
 def get_supabase_client() -> Client:
@@ -65,14 +96,62 @@ def api_request(endpoint: str) -> dict:
     return response.json()
 
 
-def sync_teams(supabase: Client, season: str) -> dict:
+def sync_competition(supabase: Client, competition_code: str) -> str:
+    """Sincronizza/crea la competizione nel DB e restituisce l'ID interno."""
+    print(f"\n🏆 Sincronizzazione competizione {competition_code}...")
+
+    if competition_code not in COMPETITIONS:
+        print(f"  ❌ Competizione {competition_code} non supportata")
+        print(f"  Competizioni valide: {', '.join(COMPETITIONS.keys())}")
+        sys.exit(1)
+
+    comp_info = COMPETITIONS[competition_code]
+
+    # Ottieni info dalla API
+    data = api_request(f"/competitions/{competition_code}")
+
+    if not data:
+        print(f"  ⚠️ Impossibile ottenere dati per {competition_code}, uso dati locali")
+        external_id = None
+        emblem_url = None
+        plan = None
+    else:
+        external_id = data.get("id")
+        emblem_url = data.get("emblem")
+        plan = data.get("plan")
+
+    try:
+        result = supabase.table("competitions").upsert({
+            "external_id": external_id,
+            "code": competition_code,
+            "name": comp_info['name'],
+            "area_name": comp_info['area'],
+            "area_code": comp_info['area_code'],
+            "emblem_url": emblem_url,
+            "plan": plan,
+            "updated_at": datetime.now().isoformat()
+        }, on_conflict="code").execute()
+
+        # Recupera l'ID interno
+        query = supabase.table("competitions").select("id").eq("code", competition_code).execute()
+        if query.data:
+            competition_id = query.data[0]["id"]
+            print(f"  ✅ Competizione {comp_info['name']} ({competition_code}) sincronizzata")
+            return competition_id
+
+    except Exception as e:
+        print(f"  ❌ Errore salvando competizione: {e}")
+        sys.exit(1)
+
+
+def sync_teams(supabase: Client, competition_code: str, season: str) -> dict:
     """Sincronizza le squadre della competizione."""
     print("\n📋 Sincronizzazione squadre...")
 
     # Determina l'anno per l'API (es. "2024-2025" -> 2024)
     api_season = season.split("-")[0]
 
-    data = api_request(f"/competitions/{COMPETITION_CODE}/teams?season={api_season}")
+    data = api_request(f"/competitions/{competition_code}/teams?season={api_season}")
 
     if not data.get("teams"):
         print("  ⚠️ Nessuna squadra trovata")
@@ -180,12 +259,12 @@ def sync_referees(supabase: Client, matches_data: list) -> dict:
     return referee_map
 
 
-def sync_matches(supabase: Client, season: str, team_map: dict, referee_map: dict) -> list:
+def sync_matches(supabase: Client, competition_code: str, competition_id: str, season: str, team_map: dict, referee_map: dict) -> list:
     """Sincronizza le partite della stagione."""
     print("\n⚽ Sincronizzazione partite...")
 
     api_season = season.split("-")[0]
-    data = api_request(f"/competitions/{COMPETITION_CODE}/matches?season={api_season}")
+    data = api_request(f"/competitions/{competition_code}/matches?season={api_season}")
 
     if not data.get("matches"):
         print("  ⚠️ Nessuna partita trovata")
@@ -201,9 +280,14 @@ def sync_matches(supabase: Client, season: str, team_map: dict, referee_map: dic
             away_team_id = team_map.get(match["awayTeam"]["id"])
 
             referee_id = None
-            if match.get("referees"):
-                ref_ext_id = match["referees"][0]["id"]
-                referee_id = referee_map.get(ref_ext_id)
+            var_referee_id = None
+            for ref in match.get("referees", []):
+                ref_type = ref.get("type", "")
+                ref_int_id = referee_map.get(ref["id"])
+                if ref_type == "REFEREE":
+                    referee_id = ref_int_id
+                elif ref_type == "VIDEO_ASSISTANT_REFEREE_N1":
+                    var_referee_id = ref_int_id
 
             score = match.get("score", {})
             full_time = score.get("fullTime", {})
@@ -211,6 +295,7 @@ def sync_matches(supabase: Client, season: str, team_map: dict, referee_map: dic
 
             result = supabase.table("matches").upsert({
                 "external_id": match["id"],
+                "competition_id": competition_id,
                 "season": season,
                 "matchday": match.get("matchday"),
                 "match_date": match["utcDate"],
@@ -223,6 +308,7 @@ def sync_matches(supabase: Client, season: str, team_map: dict, referee_map: dic
                 "away_score_halftime": half_time.get("away"),
                 "winner": score.get("winner"),
                 "referee_id": referee_id,
+                "var_referee_id": var_referee_id,
                 "updated_at": datetime.now().isoformat()
             }, on_conflict="external_id").execute()
 
@@ -352,10 +438,38 @@ def sync_match_details(supabase: Client, match_ids: list, team_map: dict, player
                     except Exception as e:
                         pass
 
-        # --- STATISTICHE PARTITA (se disponibili con Statistics Add-On) ---
-        # Queste potrebbero essere in un endpoint separato o incluse nella risposta
+        # --- STATISTICHE PARTITA (Statistics Add-On) ---
+        for team_key, is_home in [('homeTeam', True), ('awayTeam', False)]:
+            team_data = data.get(team_key, {})
+            stats = team_data.get('statistics', {})
+            if stats:
+                team_ext_id = team_data.get('id')
+                team_int_id = team_map.get(team_ext_id)
 
-    print(f"  ✅ Sincronizzati {total_events} eventi, {total_lineups} formazioni")
+                if team_int_id:
+                    try:
+                        supabase.table("match_statistics").upsert({
+                            "match_id": internal_id,
+                            "team_id": team_int_id,
+                            "ball_possession": stats.get("ball_possession"),
+                            "shots_on_goal": stats.get("shots_on_goal"),
+                            "shots_off_goal": stats.get("shots_off_goal"),
+                            "total_shots": stats.get("shots"),
+                            "corner_kicks": stats.get("corner_kicks"),
+                            "free_kicks": stats.get("free_kicks"),
+                            "goal_kicks": stats.get("goal_kicks"),
+                            "throw_ins": stats.get("throw_ins"),
+                            "saves": stats.get("saves"),
+                            "offsides": stats.get("offsides"),
+                            "fouls_committed": stats.get("fouls"),
+                            "yellow_cards": stats.get("yellow_cards"),
+                            "red_cards": stats.get("red_cards")
+                        }, on_conflict="match_id,team_id").execute()
+                        total_stats += 1
+                    except Exception as e:
+                        print(f"    ⚠️ Errore statistiche: {e}")
+
+    print(f"  ✅ Sincronizzati {total_events} eventi, {total_lineups} formazioni, {total_stats} statistiche")
 
 
 def update_aggregated_stats(supabase: Client, season: str):
@@ -391,16 +505,21 @@ def update_aggregated_stats(supabase: Client, season: str):
     print("  ℹ️ Statistiche aggregate calcolate tramite viste del database")
 
 
-def sync_season(season: str, full_sync: bool = False):
-    """Sincronizza tutti i dati per una stagione."""
+def sync_season(competition_code: str, season: str, full_sync: bool = False):
+    """Sincronizza tutti i dati per una stagione e competizione."""
+    comp_name = COMPETITIONS.get(competition_code, {}).get('name', competition_code)
+
     print(f"\n{'='*60}")
-    print(f"🏆 SINCRONIZZAZIONE LA LIGA {season}")
+    print(f"🏆 SINCRONIZZAZIONE {comp_name} {season}")
     print(f"{'='*60}")
 
     supabase = get_supabase_client()
 
+    # 0. Competizione
+    competition_id = sync_competition(supabase, competition_code)
+
     # 1. Squadre
-    team_map = sync_teams(supabase, season)
+    team_map = sync_teams(supabase, competition_code, season)
     if not team_map:
         print("❌ Impossibile continuare senza squadre")
         return
@@ -410,14 +529,14 @@ def sync_season(season: str, full_sync: bool = False):
 
     # 3. Partite (recupera anche gli arbitri)
     api_season = season.split("-")[0]
-    matches_data = api_request(f"/competitions/{COMPETITION_CODE}/matches?season={api_season}")
+    matches_data = api_request(f"/competitions/{competition_code}/matches?season={api_season}")
     matches_list = matches_data.get("matches", [])
 
     # 4. Arbitri
     referee_map = sync_referees(supabase, matches_list)
 
     # 5. Salva partite
-    match_ids = sync_matches(supabase, season, team_map, referee_map)
+    match_ids = sync_matches(supabase, competition_code, competition_id, season, team_map, referee_map)
 
     # 6. Dettagli partite (solo se full_sync o poche partite)
     if full_sync or len(match_ids) <= 50:
@@ -430,12 +549,36 @@ def sync_season(season: str, full_sync: bool = False):
     update_aggregated_stats(supabase, season)
 
     print(f"\n{'='*60}")
-    print(f"✅ SINCRONIZZAZIONE {season} COMPLETATA")
+    print(f"✅ SINCRONIZZAZIONE {comp_name} {season} COMPLETATA")
     print(f"{'='*60}")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Sincronizza dati La Liga da football-data.org")
+    parser = argparse.ArgumentParser(
+        description="Sincronizza dati calcio da football-data.org",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=f"Competizioni supportate: {', '.join(COMPETITIONS.keys())}"
+    )
+
+    # Competizioni
+    parser.add_argument(
+        "--competition",
+        type=str,
+        default="PD",
+        help="Competizione da sincronizzare (default: PD). Es: PD, SA, BL1, PL, FL1"
+    )
+    parser.add_argument(
+        "--competitions",
+        type=str,
+        help="Lista competizioni separate da virgola (es: PD,SA,BL1)"
+    )
+    parser.add_argument(
+        "--all-competitions",
+        action="store_true",
+        help="Sincronizza tutte le competizioni configurate"
+    )
+
+    # Stagioni
     parser.add_argument(
         "--season",
         type=str,
@@ -443,10 +586,17 @@ def main():
         help="Stagione da sincronizzare (es: 2024-2025)"
     )
     parser.add_argument(
-        "--all",
-        action="store_true",
-        help="Sincronizza tutte le stagioni (2023-2024, 2024-2025, 2025-2026)"
+        "--seasons",
+        type=str,
+        help="Lista stagioni separate da virgola (es: 2023-2024,2024-2025)"
     )
+    parser.add_argument(
+        "--all-seasons",
+        action="store_true",
+        help="Sincronizza tutte le stagioni supportate"
+    )
+
+    # Opzioni
     parser.add_argument(
         "--full",
         action="store_true",
@@ -455,11 +605,33 @@ def main():
 
     args = parser.parse_args()
 
-    if args.all:
-        for season in ["2023-2024", "2024-2025", "2025-2026"]:
-            sync_season(season, args.full)
+    # Determina lista competizioni
+    if args.all_competitions:
+        competitions_list = list(COMPETITIONS.keys())
+    elif args.competitions:
+        competitions_list = [c.strip().upper() for c in args.competitions.split(",")]
     else:
-        sync_season(args.season, args.full)
+        competitions_list = [args.competition.upper()]
+
+    # Valida competizioni
+    for comp in competitions_list:
+        if comp not in COMPETITIONS:
+            print(f"❌ Competizione '{comp}' non valida.")
+            print(f"   Competizioni supportate: {', '.join(COMPETITIONS.keys())}")
+            sys.exit(1)
+
+    # Determina lista stagioni
+    if args.all_seasons:
+        seasons_list = ALL_SEASONS
+    elif args.seasons:
+        seasons_list = [s.strip() for s in args.seasons.split(",")]
+    else:
+        seasons_list = [args.season]
+
+    # Esegui sincronizzazione
+    for comp in competitions_list:
+        for season in seasons_list:
+            sync_season(comp, season, args.full)
 
     print("\n🎉 Done!")
 

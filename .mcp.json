@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "yelloworacle": {
+      "command": "/home/salvatore/Scrivania/soccer/venv/bin/python",
+      "args": ["/home/salvatore/Scrivania/soccer/mcp_server.py"],
+      "cwd": "/home/salvatore/Scrivania/soccer"
+    }
+  }
+}
