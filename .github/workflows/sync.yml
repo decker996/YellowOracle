@@ -24,8 +24,9 @@ on:
         type: string
 
   # Schedule automatico: ogni martedì alle 06:00 ora italiana (05:00 UTC)
-  schedule:
-    - cron: '0 5 * * 2'
+  # DISABILITATO TEMPORANEAMENTE - decommentare quando sync iniziale completato
+  # schedule:
+  #   - cron: '0 5 * * 2'
 
 env:
   SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
