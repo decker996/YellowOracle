@@ -1,7 +1,7 @@
 # YellowOracle - Stato del Progetto
 
-**Ultimo aggiornamento:** 2026-01-26 21:30
-**Fase attuale:** Alpha v2 - Analisi potenziata con flusso a 3 fasi e metriche falli
+**Ultimo aggiornamento:** 2026-01-26 23:00
+**Fase attuale:** Alpha v2 - Documentazione unificata
 
 ---
 
@@ -17,37 +17,15 @@ Sistema di analisi cartellini per scommesse calcistiche. Analizza:
 
 ## Stato Database
 
-| Tabella | Record | Note |
-|---------|--------|------|
-| `competitions` | 1 | La Liga sincronizzata |
-| `teams` | 24 | La Liga |
-| `players` | 688 | La Liga |
-| `referees` | 76 | La Liga |
-| `matches` | 760 | La Liga 2025-2026 |
-| `match_events` | 1000+ | Gol e cartellini |
-| `match_statistics` | 760 | Falli, possesso, tiri |
-| `lineups` | 1000+ | Formazioni |
-
-**Prossimo:** Sincronizzare altre competizioni (Serie A, Premier, ecc.)
-
----
-
-## Competizioni Supportate (7)
-
-### Campionati Nazionali
-| Codice | Campionato | Paese | Stato |
-|--------|------------|-------|-------|
-| PD | La Liga | Spagna | ✅ Sincronizzata |
-| SA | Serie A | Italia | ⏳ Da sincronizzare |
-| BL1 | Bundesliga | Germania | ⏳ Da sincronizzare |
-| PL | Premier League | Inghilterra | ⏳ Da sincronizzare |
-| FL1 | Ligue 1 | Francia | ⏳ Da sincronizzare |
-
-### Competizioni UEFA
-| Codice | Competizione | Stato |
-|--------|--------------|-------|
-| CL | UEFA Champions League | ⏳ Da sincronizzare |
-| EL | UEFA Europa League | ⏳ Da sincronizzare |
+| Competizione | Codice | Stato | Note |
+|--------------|--------|-------|------|
+| Serie A | SA | ✅ Completo | 3 stagioni |
+| La Liga | PD | ⚠️ Parziale | In completamento |
+| Premier League | PL | ⏳ In corso | Stagione corrente |
+| Bundesliga | BL1 | ❌ Da fare | - |
+| Ligue 1 | FL1 | ❌ Da fare | - |
+| Champions League | CL | ❌ Da fare | - |
+| Europa League | EL | ❌ Da fare | - |
 
 ---
 
@@ -55,6 +33,8 @@ Sistema di analisi cartellini per scommesse calcistiche. Analizza:
 
 | Tool | Descrizione | Parametri |
 |------|-------------|-----------|
+| `analyze_match_risk` | **Principale** - Analisi con score pesato | home_team, away_team, referee? |
+| `get_matches_by_date` | Partite per data | competition?, date?, days_ahead? |
 | `get_player_season_stats` | Cartellini per competizione | player_name, season?, competition? |
 | `get_player_season_stats_total` | Cartellini totali (tutte competizioni) | player_name, season? |
 | `get_referee_player_cards` | Storico arbitro-giocatore | referee_name, team1, team2 |
@@ -63,52 +43,69 @@ Sistema di analisi cartellini per scommesse calcistiche. Analizza:
 | `get_referees` | Lista arbitri con statistiche | - |
 | `get_team_players` | Giocatori di una squadra | team_name, season? |
 | `get_match_statistics` | Falli, possesso, tiri | team_name?, season?, limit? |
-| `get_matches_by_date` | Partite per data | competition?, date?, days_ahead? |
-| `analyze_match_risk` | Analisi con score pesato (35/30/15/20) | home_team, away_team, referee? |
 
 ---
 
-## File del Progetto
+## Struttura File
 
 ```
 soccer/
-├── .env                              # Credenziali (Supabase + Football API)
+├── .env                              # Credenziali (non in git)
 ├── .mcp.json                         # Configurazione MCP per Claude
-├── CLAUDE.md                         # **NUOVO** System prompt per analisi
+├── CLAUDE.md                         # System prompt per analisi
 ├── STATO_PROGETTO.md                 # QUESTO FILE
-├── requirements.txt                  # **NUOVO** Dipendenze Python
+├── requirements.txt                  # Dipendenze Python
 ├── mcp_server.py                     # Server MCP (10 tool)
 │
-├── .github/
-│   └── workflows/
-│       └── sync.yml                  # **NUOVO** GitHub Actions per sync automatico
+├── .github/workflows/
+│   └── sync.yml                      # GitHub Actions per sync
 │
 ├── database/
-│   ├── schema_v2.sql                 # Schema database completo
-│   └── analysis_views.sql            # Viste e funzioni SQL per analisi
+│   ├── schema_v2.sql                 # Schema database
+│   └── analysis_views.sql            # Views e RPC functions
 │
 ├── scripts/
-│   ├── sync_football_data.py         # Script sync (ora con --days!)
-│   ├── weekly_sync.sh                # Sync settimanale multi-competizione
-│   └── full_sync.sh                  # Sync completa multi-competizione
+│   ├── sync_football_data.py         # Script sync principale
+│   ├── weekly_sync.sh                # Sync incrementale
+│   ├── full_sync.sh                  # Sync completo
+│   └── archive/                      # Script legacy archiviati
+│       ├── scrape_laliga.py
+│       └── test_parallel_api.py
 │
 ├── dashboard/
 │   ├── app.py                        # Homepage Streamlit
 │   └── pages/
-│       ├── 1_players.py              # Statistiche giocatori
-│       ├── 2_referees.py             # Statistiche arbitri
-│       └── 3_match_analysis.py       # Analisi partita
+│       ├── 1_players.py
+│       ├── 2_referees.py
+│       └── 3_match_analysis.py
 │
-└── docs/
-    └── plans/
-        ├── 2026-01-26-yelloworacle-design.md
-        ├── 2026-01-26-alpha-interface-design.md    # **NUOVO**
-        └── 2026-01-26-alpha-implementation.md      # **NUOVO**
+└── docs/                             # Documentazione modulare
+    ├── ARCHITECTURE.md               # Overview sistema
+    ├── DATABASE.md                   # Schema e views
+    ├── MCP_TOOLS.md                  # Reference 10 tool
+    ├── SYNC.md                       # Pipeline sincronizzazione
+    ├── SCORING.md                    # Formule calcolo score
+    ├── CLAUDE_WORKFLOW.md            # Logica flusso 3-fasi
+    ├── CRON_SETUP.md                 # Setup cron
+    └── plans/archive/                # Design docs archiviati (9 file)
 ```
 
 ---
 
-## Come Usare YellowOracle (Alpha)
+## Documentazione
+
+| Documento | Contenuto |
+|-----------|-----------|
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Overview sistema, componenti, stack |
+| [docs/DATABASE.md](docs/DATABASE.md) | Schema tabelle, views, RPC functions |
+| [docs/MCP_TOOLS.md](docs/MCP_TOOLS.md) | Reference dei 10 tool MCP |
+| [docs/SYNC.md](docs/SYNC.md) | Pipeline sincronizzazione dati |
+| [docs/SCORING.md](docs/SCORING.md) | Formule e calcolo risk score |
+| [docs/CLAUDE_WORKFLOW.md](docs/CLAUDE_WORKFLOW.md) | Logica del flusso 3-fasi |
+
+---
+
+## Come Usare YellowOracle
 
 ### Interfaccia: Claude Code
 
@@ -116,25 +113,18 @@ Apri Claude Code nella directory del progetto e chiedi:
 
 **Partita singola:**
 ```
-Analizza Real Madrid vs Barcelona di domenica
+Analizza Roma vs Milan di domenica
 ```
 
 **Giornata intera:**
 ```
-Analizzami le partite di La Liga di oggi
+Analizzami le partite di Serie A di oggi
 ```
 
 **Giocatore specifico:**
 ```
-Vinicius rischia il giallo contro l'Atletico?
+Barella rischia il giallo contro il Napoli?
 ```
-
-### Output Atteso
-
-Claude risponderà con:
-- Tabella top 3 giocatori a rischio per squadra
-- Score breakdown (stagionale/arbitro/H2H)
-- Analisi discorsiva
 
 ---
 
@@ -143,19 +133,15 @@ Claude risponderà con:
 ```bash
 # === SINCRONIZZAZIONE ===
 
-# Sync INCREMENTALE (dall'ultima partita in DB a oggi) - CONSIGLIATO!
-./venv/bin/python scripts/sync_football_data.py --competition SA --season 2025-2026 --incremental --full
+# Sync incrementale (consigliato)
+./venv/bin/python scripts/sync_football_data.py --competition SA --season 2025-2026 --incremental
 
-# Sync tutte le competizioni (incrementale)
-./scripts/weekly_sync.sh              # Tutte, incrementale
-./scripts/weekly_sync.sh "SA PL"      # Solo alcune
-
-# Sync completa stagione (usa solo per prima volta o ricostruzione)
+# Sync completo (prima volta o ricostruzione)
 ./venv/bin/python scripts/sync_football_data.py --competition SA --season 2025-2026 --full
 
-# Sync completa (tutte stagioni)
-./scripts/full_sync.sh SA             # Solo Serie A
-./scripts/full_sync.sh                # Tutte
+# Sync multi-competizione
+./scripts/weekly_sync.sh              # Tutte, incrementale
+./scripts/weekly_sync.sh "SA PL"      # Solo alcune
 
 
 # === VERIFICA DATABASE ===
@@ -177,107 +163,63 @@ for t in ['competitions','teams','players','referees','matches','match_events','
 
 ---
 
-## GitHub Actions (Sync Automatico)
-
-Il sync può girare automaticamente su GitHub:
-
-1. **Configura Secrets** nel repo GitHub:
-   - `SUPABASE_URL`
-   - `SUPABASE_KEY`
-   - `FOOTBALL_API_KEY`
-
-2. **Trigger:**
-   - Manuale: Actions → "YellowOracle Sync" → Run workflow
-   - Automatico: Ogni lunedì alle 6:00 UTC
-
----
-
 ## Prossimi Passi
 
-### PRIORITÀ 1: Sincronizzare Altre Competizioni
-
+### PRIORITÀ 1: Completare Sync
 ```bash
-# Serie A
-./venv/bin/python scripts/sync_football_data.py --competition SA --season 2025-2026 --full
-
-# Premier League
+# Completare Premier League
 ./venv/bin/python scripts/sync_football_data.py --competition PL --season 2025-2026 --full
+
+# Bundesliga, Ligue 1
+./venv/bin/python scripts/sync_football_data.py --competition BL1 --season 2025-2026 --full
+./venv/bin/python scripts/sync_football_data.py --competition FL1 --season 2025-2026 --full
 ```
 
 ### PRIORITÀ 2: Test Analisi
+Testare il flusso completo con partite reali delle competizioni sincronizzate.
 
-Dopo aver sincronizzato i dati, testare:
-```
-Analizza Napoli vs Inter
-Analizza le partite di Serie A di domani
-```
-
-### PRIORITÀ 3: Dashboard Web (Fase Beta)
-
-- Migliorare dashboard Streamlit
-- Aggiungere form per analisi partita
-- Deploy su Streamlit Cloud
-
----
-
-## Architettura
-
-```
-┌─────────────────┐     ┌──────────────────┐     ┌─────────────┐
-│ football-data   │────▶│ sync_football_   │────▶│  Supabase   │
-│ .org API        │     │ data.py          │     │  Database   │
-└─────────────────┘     └──────────────────┘     └─────────────┘
-                                                        │
-                        ┌───────────────────────────────┤
-                        │                               │
-                        ▼                               ▼
-                ┌──────────────┐               ┌──────────────┐
-                │  MCP Server  │               │  Streamlit   │
-                │  (Claude)    │               │  Dashboard   │
-                └──────────────┘               └──────────────┘
-                        │
-                        ▼
-                ┌──────────────┐
-                │ GitHub       │
-                │ Actions      │
-                └──────────────┘
-```
+### PRIORITÀ 3: Dashboard (Fase Beta)
+Migliorare UI Streamlit e deploy su cloud.
 
 ---
 
 ## Cronologia Sessioni
 
+### 2026-01-26 (Sessione 4 - Sera)
+- **Documentazione unificata:**
+  - Creati 6 documenti modulari in `docs/`
+  - Archiviati 9 vecchi design docs in `docs/plans/archive/`
+  - Eliminato `database/schema.sql` (obsoleto)
+  - Archiviati script legacy in `scripts/archive/`
+  - Aggiornato STATO_PROGETTO.md
+
 ### 2026-01-26 (Sessione 3 - Sera)
 - **Analisi Potenziata v2:**
-  - Nuovo flusso a 3 fasi: Fase 0 (ricerca web formazioni/arbitro), Fase 1 (dati MCP), Fase 2 (contesto web)
+  - Flusso a 3 fasi: ricerca web → dati MCP → contesto web
   - Metriche falli integrate nel calcolo score
-  - Nuovi pesi: 35% stagionale, 30% arbitro, 15% H2H, 20% falli
-  - Vista SQL `team_fouls_stats` per statistiche falli squadra
-  - `CLAUDE.md` riscritto con template output discorsivo + glossario
-  - Fix bug `get_match_statistics` (team_side → team_id)
-  - Design doc: `docs/plans/2026-01-26-enhanced-analysis-design.md`
+  - Pesi: 35% stagionale, 30% arbitro, 15% H2H, 20% falli
+  - Vista SQL `team_fouls_stats`
+  - Template output discorsivo + glossario
 
 ### 2026-01-26 (Sessione 2 - Pomeriggio)
 - **Alpha implementata:**
-  - `CLAUDE.md` - System prompt per analisi cartellini
-  - Script sync multi-competizione (`weekly_sync.sh`, `full_sync.sh`)
+  - `CLAUDE.md` system prompt
+  - Script sync multi-competizione
   - Sync incrementale con `--days N`
   - GitHub Actions per sync automatico
-  - La Liga 2025-2026 sincronizzata (380 partite, 1461 eventi, 760 statistiche)
 
 ### 2026-01-26 (Sessione 1 - Mattina/Notte)
 - Design iniziale, viste SQL, dashboard Streamlit
 - MCP server con 10 tool
-- Supporto 7 competizioni (5 campionati + 2 UEFA)
-- Score pesato (40% stagionale + 35% arbitro + 25% H2H)
+- Supporto 7 competizioni
 
 ---
 
 ## Come Riprendere una Sessione
 
-```
-Leggi STATO_PROGETTO.md
-```
+1. Leggi `STATO_PROGETTO.md` (questo file) per il contesto
+2. Consulta `docs/` per dettagli tecnici specifici
+3. Verifica stato DB con il comando nella sezione "Comandi Utili"
 
 ---
 
