@@ -1,7 +1,7 @@
 # YellowOracle - Stato del Progetto
 
-**Ultimo aggiornamento:** 2026-01-26 18:00
-**Fase attuale:** Implementazione completata, pronto per sincronizzazione dati
+**Ultimo aggiornamento:** 2026-01-26 23:30
+**Fase attuale:** Multi-match analysis implementato, pronto per test dopo riavvio MCP server
 
 ---
 
@@ -51,7 +51,7 @@ Sistema di analisi cartellini per scommesse calcistiche. Analizza:
 
 ---
 
-## MCP Server - 9 Tool Disponibili
+## MCP Server - 10 Tool Disponibili
 
 | Tool | Descrizione | Parametri |
 |------|-------------|-----------|
@@ -63,7 +63,8 @@ Sistema di analisi cartellini per scommesse calcistiche. Analizza:
 | `get_referees` | Lista arbitri con statistiche | - |
 | `get_team_players` | Giocatori di una squadra | team_name, season? |
 | `get_match_statistics` | Falli, possesso, tiri | team_name?, season?, limit? |
-| `analyze_match_risk` | Analisi rischio partita | home_team, away_team, referee? |
+| `get_matches_by_date` | **NUOVO** Partite per data | competition?, date?, days_ahead? |
+| `analyze_match_risk` | **POTENZIATO** Analisi con score pesato (40/35/25) | home_team, away_team, referee? |
 
 ---
 
@@ -97,12 +98,29 @@ soccer/
     └── plans/
         ├── 2026-01-26-yelloworacle-design.md
         ├── 2026-01-26-card-analysis-design.md
-        └── 2026-01-26-uefa-competitions-design.md
+        ├── 2026-01-26-uefa-competitions-design.md
+        ├── 2026-01-26-multi-match-analysis-design.md    # NUOVO: Design feature multi-partita
+        └── 2026-01-26-multi-match-implementation.md     # NUOVO: Piano implementazione
 ```
 
 ---
 
 ## Prossimi Passi
+
+### PRIORITA' 0: Attivare Nuovi Tool MCP
+
+I tool `get_matches_by_date` e `analyze_match_risk` potenziato sono pronti ma richiedono **riavvio del server MCP**.
+
+**Test dopo riavvio:**
+```
+"Quali partite ci sono in Serie A domani?"
+"Analizza Napoli vs Inter con arbitro Mariani"
+```
+
+**Output atteso per analyze_match_risk:**
+- `home_team_top3` / `away_team_top3` / `overall_top3`
+- Ogni giocatore con `breakdown` (seasonal/referee/h2h scores)
+- Score combinato pesato (40% stagionale + 35% arbitro + 25% H2H)
 
 ### PRIORITA' 1: Sincronizzazione Dati
 
@@ -243,6 +261,12 @@ Avvia la sincronizzazione per Serie A stagione 2025-2026
 - **Mattina**: Design iniziale, viste SQL, dashboard Streamlit, MCP server (7 tool)
 - **Pomeriggio**: Fix SQL, Statistics Add-On, VAR, multi-competizione (5 campionati)
 - **Sera**: Tool `get_match_statistics`, supporto UEFA (CL + EL), analisi per competizione, MCP server (9 tool)
+- **Notte**: Feature multi-match analysis:
+  - Nuovo tool `get_matches_by_date` per recuperare partite di una giornata
+  - `analyze_match_risk` potenziato con score pesato (40% stagionale + 35% arbitro + 25% H2H)
+  - Output con breakdown dettagliato e top 3 per squadra
+  - MCP server ora ha 10 tool
+  - **RICHIEDE RIAVVIO MCP SERVER per attivare i nuovi tool**
 
 ---
 
