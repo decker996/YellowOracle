@@ -24,7 +24,7 @@ import os
 import sys
 import time
 import argparse
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 import requests
@@ -263,12 +263,27 @@ def sync_referees(supabase: Client, matches_data: list) -> dict:
     return referee_map
 
 
-def sync_matches(supabase: Client, competition_code: str, competition_id: str, season: str, team_map: dict, referee_map: dict) -> list:
+def sync_matches(supabase: Client, competition_code: str, competition_id: str, season: str, team_map: dict, referee_map: dict, days: int = None) -> list:
     """Sincronizza le partite della stagione."""
     print("\n⚽ Sincronizzazione partite...")
 
+    # Validate days parameter
+    if days is not None and days < 0:
+        print("❌ Errore: --days deve essere >= 0")
+        return []
+
     api_season = season.split("-")[0]
-    data = api_request(f"/competitions/{competition_code}/matches?season={api_season}")
+
+    # Build API URL with optional date range
+    if days is not None:
+        date_from = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+        date_to = datetime.now().strftime("%Y-%m-%d")
+        endpoint = f"/competitions/{competition_code}/matches?season={api_season}&dateFrom={date_from}&dateTo={date_to}"
+        print(f"  📆 Filtro date: {date_from} -> {date_to}")
+    else:
+        endpoint = f"/competitions/{competition_code}/matches?season={api_season}"
+
+    data = api_request(endpoint)
 
     if not data.get("matches"):
         print("  ⚠️ Nessuna partita trovata")
@@ -509,7 +524,7 @@ def update_aggregated_stats(supabase: Client, season: str):
     print("  ℹ️ Statistiche aggregate calcolate tramite viste del database")
 
 
-def sync_season(competition_code: str, season: str, full_sync: bool = False):
+def sync_season(competition_code: str, season: str, full_sync: bool = False, days: int = None):
     """Sincronizza tutti i dati per una stagione e competizione."""
     comp_name = COMPETITIONS.get(competition_code, {}).get('name', competition_code)
 
@@ -532,15 +547,22 @@ def sync_season(competition_code: str, season: str, full_sync: bool = False):
     player_map = sync_players(supabase, team_map)
 
     # 3. Partite (recupera anche gli arbitri)
+    # Build API URL with optional date range (same logic as sync_matches)
     api_season = season.split("-")[0]
-    matches_data = api_request(f"/competitions/{competition_code}/matches?season={api_season}")
+    if days is not None:
+        date_from = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+        date_to = datetime.now().strftime("%Y-%m-%d")
+        matches_endpoint = f"/competitions/{competition_code}/matches?season={api_season}&dateFrom={date_from}&dateTo={date_to}"
+    else:
+        matches_endpoint = f"/competitions/{competition_code}/matches?season={api_season}"
+    matches_data = api_request(matches_endpoint)
     matches_list = matches_data.get("matches", [])
 
     # 4. Arbitri
     referee_map = sync_referees(supabase, matches_list)
 
     # 5. Salva partite
-    match_ids = sync_matches(supabase, competition_code, competition_id, season, team_map, referee_map)
+    match_ids = sync_matches(supabase, competition_code, competition_id, season, team_map, referee_map, days)
 
     # 6. Dettagli partite (solo se full_sync o poche partite)
     if full_sync or len(match_ids) <= 50:
@@ -606,6 +628,11 @@ def main():
         action="store_true",
         help="Sincronizzazione completa inclusi dettagli partite"
     )
+    parser.add_argument(
+        "--days",
+        type=int,
+        help="Sync only matches from last N days (incremental sync)"
+    )
 
     args = parser.parse_args()
 
@@ -635,7 +662,7 @@ def main():
     # Esegui sincronizzazione
     for comp in competitions_list:
         for season in seasons_list:
-            sync_season(comp, season, args.full)
+            sync_season(comp, season, args.full, args.days)
 
     print("\n🎉 Done!")
 
