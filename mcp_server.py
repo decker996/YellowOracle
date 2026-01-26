@@ -399,7 +399,7 @@ def get_match_statistics(team_name: str = None, season: str = "2025-2026", limit
 def analyze_match_risk(home_team: str, away_team: str, referee: str = None) -> str:
     """
     Analizza il rischio cartellino per una partita specifica.
-    Combina i 3 fattori: storico stagionale, storico arbitro, scontri diretti.
+    Combina 3 fattori con pesi: stagionale (40%), arbitro (35%), H2H (25%).
 
     Args:
         home_team: Squadra di casa
@@ -407,62 +407,36 @@ def analyze_match_risk(home_team: str, away_team: str, referee: str = None) -> s
         referee: Nome arbitro (opzionale)
 
     Returns:
-        Analisi completa con giocatori a rischio e raccomandazioni
+        Analisi completa con top 3 giocatori a rischio per squadra e breakdown score
     """
     supabase = get_supabase()
 
     analysis = {
         "match": f"{home_team} vs {away_team}",
-        "referee": referee or "Non specificato",
-        "home_team_players": [],
-        "away_team_players": [],
-        "top_risk_players": []
+        "referee": referee or "Non designato",
+        "referee_note": None,
+        "home_team_top3": [],
+        "away_team_top3": [],
+        "overall_top3": []
     }
 
+    # Pesi per il calcolo dello score
+    WEIGHT_SEASONAL = 0.40
+    WEIGHT_REFEREE = 0.35
+    WEIGHT_H2H = 0.25
+
     try:
-        # Giocatori squadra casa
+        # --- DATI STAGIONALI ---
         home_result = supabase.table("player_season_cards").select("*").ilike(
             "team_name", f"%{home_team}%"
         ).eq("season", "2025-2026").order("yellow_cards", desc=True).limit(15).execute()
 
-        # Giocatori squadra trasferta
         away_result = supabase.table("player_season_cards").select("*").ilike(
             "team_name", f"%{away_team}%"
         ).eq("season", "2025-2026").order("yellow_cards", desc=True).limit(15).execute()
 
-        all_players = []
-
-        for p in (home_result.data or []):
-            risk_score = float(p.get("yellows_per_90") or 0) * 100
-            player_data = {
-                "name": p["player_name"],
-                "team": p["team_name"],
-                "position": p.get("position"),
-                "season_yellows": p.get("yellow_cards", 0),
-                "yellows_per_90": p.get("yellows_per_90"),
-                "risk_score": round(risk_score, 1)
-            }
-            analysis["home_team_players"].append(player_data)
-            all_players.append(player_data)
-
-        for p in (away_result.data or []):
-            risk_score = float(p.get("yellows_per_90") or 0) * 100
-            player_data = {
-                "name": p["player_name"],
-                "team": p["team_name"],
-                "position": p.get("position"),
-                "season_yellows": p.get("yellow_cards", 0),
-                "yellows_per_90": p.get("yellows_per_90"),
-                "risk_score": round(risk_score, 1)
-            }
-            analysis["away_team_players"].append(player_data)
-            all_players.append(player_data)
-
-        # Top 5 a rischio
-        all_players.sort(key=lambda x: x["risk_score"], reverse=True)
-        analysis["top_risk_players"] = all_players[:5]
-
-        # Se c'è l'arbitro, aggiungi info
+        # --- DATI ARBITRO (se disponibile) ---
+        referee_data = {}
         if referee:
             ref_result = supabase.rpc(
                 "get_referee_player_cards",
@@ -474,9 +448,114 @@ def analyze_match_risk(home_team: str, away_team: str, referee: str = None) -> s
             ).execute()
 
             if ref_result.data:
-                analysis["referee_history"] = ref_result.data[:10]
+                for r in ref_result.data:
+                    player_name = r.get("player_name", "").lower()
+                    referee_data[player_name] = {
+                        "times_booked": r.get("times_booked", 0),
+                        "matches_with_referee": r.get("matches_with_referee", 0),
+                        "booking_percentage": float(r.get("booking_percentage", 0))
+                    }
 
-        return json.dumps(analysis, indent=2, default=str)
+        # --- CALCOLO SCORE PER OGNI GIOCATORE ---
+        all_players = []
+
+        for team_data, team_name in [(home_result.data or [], home_team), (away_result.data or [], away_team)]:
+            for p in team_data:
+                player_name = p.get("player_name", "")
+                player_name_lower = player_name.lower()
+
+                # 1. SEASONAL SCORE (40%)
+                yellows_per_90 = float(p.get("yellows_per_90") or 0)
+                seasonal_score = min(yellows_per_90 * 100, 100)
+
+                # 2. REFEREE SCORE (35%)
+                referee_score = 0
+                referee_info = None
+                if referee and player_name_lower in referee_data:
+                    ref_info = referee_data[player_name_lower]
+                    referee_score = ref_info["booking_percentage"]
+                    referee_info = f"{ref_info['times_booked']} in {ref_info['matches_with_referee']} partite"
+                elif referee:
+                    # Nessuno storico con arbitro: usa 25% della media arbitro come proxy
+                    referee_score = 25  # valore conservativo
+
+                # 3. H2H SCORE (25%) - query per i top candidati
+                h2h_score = 0
+                h2h_info = None
+                if seasonal_score > 30:  # Solo per giocatori con storico significativo
+                    try:
+                        h2h_result = supabase.rpc(
+                            "get_head_to_head_cards",
+                            {
+                                "p_player_name": player_name,
+                                "p_team1_name": home_team,
+                                "p_team2_name": away_team
+                            }
+                        ).execute()
+
+                        if h2h_result.data and len(h2h_result.data) > 0:
+                            h2h = h2h_result.data[0]
+                            h2h_matches = h2h.get("total_h2h_matches", 0)
+                            h2h_yellows = h2h.get("total_yellows", 0)
+                            if h2h_matches > 0:
+                                h2h_score = (h2h_yellows / h2h_matches) * 100
+                                h2h_info = f"{h2h_yellows} in {h2h_matches} H2H"
+                    except:
+                        pass
+
+                # SCORE COMBINATO
+                if referee:
+                    combined_score = (
+                        seasonal_score * WEIGHT_SEASONAL +
+                        referee_score * WEIGHT_REFEREE +
+                        h2h_score * WEIGHT_H2H
+                    )
+                else:
+                    # Senza arbitro: ricalibra pesi (seasonal 62%, h2h 38%)
+                    combined_score = (
+                        seasonal_score * 0.62 +
+                        h2h_score * 0.38
+                    )
+
+                player_data = {
+                    "name": player_name,
+                    "team": p.get("team_name"),
+                    "position": p.get("position"),
+                    "combined_score": round(combined_score, 1),
+                    "breakdown": {
+                        "seasonal": {
+                            "score": round(seasonal_score, 1),
+                            "yellows": p.get("yellow_cards", 0),
+                            "matches": p.get("matches_played", 0),
+                            "per_90": yellows_per_90
+                        },
+                        "referee": {
+                            "score": round(referee_score, 1),
+                            "detail": referee_info
+                        } if referee else None,
+                        "h2h": {
+                            "score": round(h2h_score, 1),
+                            "detail": h2h_info
+                        }
+                    }
+                }
+                all_players.append(player_data)
+
+        # Ordina per score combinato
+        all_players.sort(key=lambda x: x["combined_score"], reverse=True)
+
+        # Separa per squadra e prendi top 3
+        home_players = [p for p in all_players if home_team.lower() in p["team"].lower()]
+        away_players = [p for p in all_players if away_team.lower() in p["team"].lower()]
+
+        analysis["home_team_top3"] = home_players[:3]
+        analysis["away_team_top3"] = away_players[:3]
+        analysis["overall_top3"] = all_players[:3]
+
+        if not referee:
+            analysis["referee_note"] = "Arbitro non designato - analisi basata su dati stagionali e H2H"
+
+        return json.dumps(analysis, indent=2, default=str, ensure_ascii=False)
 
     except Exception as e:
         return f"Errore nell'analisi: {str(e)}"
