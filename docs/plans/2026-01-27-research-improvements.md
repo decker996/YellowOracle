@@ -894,6 +894,237 @@ EOF
 
 ---
 
+## Task 8: Possession Differential Factor
+
+**Fonte:** Reddit r/SoccerBetting - "if you expect one team to dominate possession, you might see more fouling from the other team"
+
+**Logica:** La squadra con meno possesso palla deve rincorrere di più → commette più falli → più rischio cartellini per i suoi giocatori.
+
+**Files:**
+- Create: `database/migrations/004_possession_factor.sql`
+- Modify: `mcp_server.py` (funzione analyze_match_risk)
+
+**Step 1: Creare vista per possesso medio squadra**
+
+Creare `database/migrations/004_possession_factor.sql`:
+
+```sql
+-- database/migrations/004_possession_factor.sql
+-- Calcola possesso medio per squadra e fattore di rischio cartellino
+
+-- Vista: Possesso medio per squadra nella stagione
+CREATE OR REPLACE VIEW team_possession_stats AS
+SELECT
+    t.id AS team_id,
+    t.name AS team_name,
+    m.season,
+    COUNT(DISTINCT m.id) AS matches_played,
+    ROUND(AVG(ms.ball_possession)::NUMERIC, 1) AS avg_possession,
+    -- Classificazione stile di gioco
+    CASE
+        WHEN AVG(ms.ball_possession) >= 55 THEN 'POSSESSION_HEAVY'
+        WHEN AVG(ms.ball_possession) >= 50 THEN 'BALANCED'
+        WHEN AVG(ms.ball_possession) >= 45 THEN 'COUNTER_ATTACK'
+        ELSE 'DEFENSIVE'
+    END AS play_style,
+    -- Falli medi commessi (correlati inversamente al possesso)
+    ROUND(AVG(ms.fouls_committed)::NUMERIC, 1) AS avg_fouls_committed
+FROM teams t
+JOIN match_statistics ms ON t.id = ms.team_id
+JOIN matches m ON ms.match_id = m.id
+WHERE m.status = 'FINISHED'
+AND ms.ball_possession IS NOT NULL
+GROUP BY t.id, t.name, m.season
+HAVING COUNT(DISTINCT m.id) >= 3;
+
+-- Funzione: Calcola fattore possesso per una partita
+-- Restituisce moltiplicatore per ogni squadra basato sulla differenza di possesso attesa
+CREATE OR REPLACE FUNCTION get_possession_factor(
+    p_home_team_name TEXT,
+    p_away_team_name TEXT,
+    p_season TEXT DEFAULT '2025-2026'
+)
+RETURNS TABLE (
+    home_team TEXT,
+    home_avg_possession NUMERIC,
+    home_possession_factor NUMERIC,
+    away_team TEXT,
+    away_avg_possession NUMERIC,
+    away_possession_factor NUMERIC,
+    expected_possession_diff NUMERIC
+)
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_home_poss NUMERIC;
+    v_away_poss NUMERIC;
+    v_home_factor NUMERIC;
+    v_away_factor NUMERIC;
+BEGIN
+    -- Recupera possesso medio squadra casa
+    SELECT avg_possession INTO v_home_poss
+    FROM team_possession_stats
+    WHERE LOWER(team_name) LIKE '%' || LOWER(p_home_team_name) || '%'
+    AND season = p_season
+    LIMIT 1;
+
+    -- Recupera possesso medio squadra trasferta
+    SELECT avg_possession INTO v_away_poss
+    FROM team_possession_stats
+    WHERE LOWER(team_name) LIKE '%' || LOWER(p_away_team_name) || '%'
+    AND season = p_season
+    LIMIT 1;
+
+    -- Default se non trovato
+    v_home_poss := COALESCE(v_home_poss, 50);
+    v_away_poss := COALESCE(v_away_poss, 50);
+
+    -- Calcola fattori: chi ha meno possesso ha moltiplicatore > 1
+    -- Formula: 1 + (50 - possesso) * 0.01
+    -- Esempio: 40% possesso → 1 + (50-40)*0.01 = 1.10 (+10% rischio)
+    -- Esempio: 60% possesso → 1 + (50-60)*0.01 = 0.90 (-10% rischio)
+    v_home_factor := 1 + (50 - v_home_poss) * 0.01;
+    v_away_factor := 1 + (50 - v_away_poss) * 0.01;
+
+    -- Limita i fattori tra 0.85 e 1.15
+    v_home_factor := GREATEST(0.85, LEAST(1.15, v_home_factor));
+    v_away_factor := GREATEST(0.85, LEAST(1.15, v_away_factor));
+
+    RETURN QUERY SELECT
+        p_home_team_name,
+        v_home_poss,
+        ROUND(v_home_factor, 2),
+        p_away_team_name,
+        v_away_poss,
+        ROUND(v_away_factor, 2),
+        ROUND(v_home_poss - v_away_poss, 1);
+END;
+$$;
+
+COMMENT ON VIEW team_possession_stats IS 'Statistiche possesso palla per squadra - correlato inversamente ai falli';
+COMMENT ON FUNCTION get_possession_factor IS 'Calcola moltiplicatore rischio cartellino basato su possesso atteso';
+```
+
+**Step 2: Eseguire migrazione**
+
+Run: Eseguire `database/migrations/004_possession_factor.sql` in Supabase SQL Editor
+
+**Step 3: Verificare creazione**
+
+Run (in SQL Editor):
+```sql
+-- Test vista
+SELECT * FROM team_possession_stats WHERE season = '2025-2026' ORDER BY avg_possession DESC LIMIT 10;
+
+-- Test funzione
+SELECT * FROM get_possession_factor('Inter', 'Napoli', '2025-2026');
+```
+
+Expected: Inter ~55% possesso (factor ~0.95), Napoli ~52% possesso (factor ~0.98)
+
+**Step 4: Integrare nel server MCP**
+
+Modificare `mcp_server.py`, aggiungendo dopo la sezione derby (circa riga 495):
+
+```python
+        # --- POSSESSION FACTOR ---
+        possession_factors = {"home": 1.0, "away": 1.0}
+        try:
+            poss_result = supabase.rpc(
+                "get_possession_factor",
+                {
+                    "p_home_team_name": home_team,
+                    "p_away_team_name": away_team,
+                    "p_season": "2025-2026"
+                }
+            ).execute()
+
+            if poss_result.data and len(poss_result.data) > 0:
+                poss = poss_result.data[0]
+                possession_factors = {
+                    "home": float(poss.get("home_possession_factor") or 1.0),
+                    "away": float(poss.get("away_possession_factor") or 1.0)
+                }
+                analysis["possession"] = {
+                    "home_avg": float(poss.get("home_avg_possession") or 50),
+                    "away_avg": float(poss.get("away_avg_possession") or 50),
+                    "expected_diff": float(poss.get("expected_possession_diff") or 0),
+                    "home_factor": possession_factors["home"],
+                    "away_factor": possession_factors["away"]
+                }
+        except Exception:
+            pass  # Possession query failed, use default 1.0
+```
+
+**Step 5: Applicare fattore nel calcolo score**
+
+Nel loop giocatori, recuperare il fattore corretto:
+
+```python
+            # Fattore possesso (chi ha meno possesso commette più falli)
+            possession_factor = possession_factors["home"] if is_home else possession_factors["away"]
+```
+
+E nel calcolo finale:
+
+```python
+                # Applica tutti i moltiplicatori
+                combined_score = base_score * home_away_factor * derby_multiplier * league_factor * matchup_bonus * possession_factor
+                combined_score = min(combined_score, 100)
+```
+
+**Step 6: Aggiungere al breakdown**
+
+```python
+                    "possession_factor": possession_factor,
+```
+
+**Step 7: Testare**
+
+Run:
+```bash
+cd /home/salvatore/Scrivania/soccer
+./venv/bin/python -c "
+from mcp_server import analyze_match_risk
+import json
+
+# Test: squadra possesso vs squadra counter-attack
+result = json.loads(analyze_match_risk('Napoli', 'Atalanta'))
+print('Possession info:', result.get('possession'))
+print()
+print('Napoli (alto possesso) top player:')
+home = result.get('home_team_top5', [{}])[0]
+print(f\"  {home.get('name')}: poss_factor={home.get('breakdown',{}).get('possession_factor')}\")
+print()
+print('Atalanta (pressing aggressivo) top player:')
+away = result.get('away_team_top5', [{}])[0]
+print(f\"  {away.get('name')}: poss_factor={away.get('breakdown',{}).get('possession_factor')}\")
+"
+```
+
+Expected: Napoli factor < 1.0 (meno rischio), Atalanta factor > 1.0 (più rischio per pressing)
+
+**Step 8: Commit**
+
+```bash
+git add database/migrations/004_possession_factor.sql mcp_server.py
+git commit -m "$(cat <<'EOF'
+feat: add possession differential factor to risk calculation
+
+- Create team_possession_stats view for avg possession per team
+- Add get_possession_factor() function
+- Low possession teams: up to +15% card risk (more chasing)
+- High possession teams: up to -15% card risk (control game)
+
+Source: Reddit r/SoccerBetting insight on game flow and fouling patterns.
+
+Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>
+EOF
+)"
+```
+
+---
+
 ## Riepilogo Modifiche
 
 | Task | File Principali | Impatto |
@@ -904,6 +1135,7 @@ EOF
 | 5 | `003_referee_delta.sql`, `mcp_server.py` | Outlier ±15% |
 | 6 | `mcp_server.py` | Matchup +5-15% |
 | 7 | `SCORING.md`, `STATO_PROGETTO.md` | Documentazione |
+| 8 | `004_possession_factor.sql`, `mcp_server.py` | Possession ±15% |
 
 ## Test Finale Integrato
 
@@ -921,11 +1153,13 @@ print(f\"Derby multiplier: {result.get('derby_multiplier')}\")
 print(f\"League factor: {result.get('league_factor')}\")
 print(f\"Referee profile: {result.get('referee_profile')}\")
 print(f\"Opponent foul factors: {result.get('opponent_foul_factors')}\")
+print(f\"Possession: {result.get('possession')}\")
 print()
 print('Top 3 rischio:')
 for p in result.get('overall_top5', [])[:3]:
-    print(f\"  {p['name']}: {p['combined_score']} (home={p.get('is_home')})\")
+    bd = p.get('breakdown', {})
+    print(f\"  {p['name']}: {p['combined_score']} (home={p.get('is_home')}, poss={bd.get('possession_factor')})\")
 "
 ```
 
-Expected output: Scores più alti per trasferta, moltiplicatore derby 1.26, Maresca come STRICT_OUTLIER.
+Expected output: Scores più alti per trasferta, moltiplicatore derby 1.26, Maresca come STRICT_OUTLIER, possession factors basati su storico squadre.
