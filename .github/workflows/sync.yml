@@ -18,7 +18,7 @@ on:
           - incremental
           - full
       season:
-        description: 'Stagione (per sync full)'
+        description: 'Stagione (solo per incremental, full fa tutte)'
         required: false
         default: '2025-2026'
         type: string
