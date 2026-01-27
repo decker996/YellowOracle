@@ -2,21 +2,33 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** Implementare 6 miglioramenti al modello di scoring basati sulle ricerche accademiche analizzate, per aumentare l'accuratezza predittiva del 15-25%.
+**Goal:** Implementare 6 miglioramenti al modello di scoring basati su ricerche accademiche, per aumentare l'accuratezza predittiva del 15-25%.
 
-**Architecture:** Il piano aggiunge nuove variabili al calcolo dello score esistente in `analyze_match_risk()`. Le modifiche toccano: database (nuove tabelle/colonne), SQL views, e la logica Python del server MCP. L'approccio è incrementale: ogni task è indipendente e testabile.
+**Architecture:** Il piano è riorganizzato in 3 fasi:
+- **Fase A (Task 1-4):** Migrazioni database - creano tabelle, viste e funzioni SQL (eseguibili in parallelo)
+- **Fase B (Task 5):** Integrazione MCP - unica modifica a `mcp_server.py` che integra TUTTI i nuovi fattori
+- **Fase C (Task 6):** Documentazione
 
 **Tech Stack:** PostgreSQL (Supabase), Python 3.x, FastMCP, SQL Views/Functions
 
 ---
 
-## Task 1: Derby Flag - Database e Dati
+## FASE A: MIGRAZIONI DATABASE
+
+---
+
+## Task 1: Derby Rivalries - Tabella e Funzione
 
 **Files:**
 - Create: `database/migrations/001_derby_rivalries.sql`
-- Modify: `database/schema_v2.sql:112-113` (colonna is_derby già esiste, aggiungere tabella rivalità)
 
-**Step 1: Creare file migrazione con tabella rivalries**
+**Step 1: Creare directory migrations**
+
+```bash
+mkdir -p /home/salvatore/Scrivania/soccer/database/migrations
+```
+
+**Step 2: Creare file migrazione**
 
 ```sql
 -- database/migrations/001_derby_rivalries.sql
@@ -35,7 +47,7 @@ CREATE TABLE IF NOT EXISTS rivalries (
 );
 
 -- Indice per ricerche veloci
-CREATE INDEX idx_rivalries_teams ON rivalries(team1_id, team2_id);
+CREATE INDEX IF NOT EXISTS idx_rivalries_teams ON rivalries(team1_id, team2_id);
 
 -- Inserimento rivalità Serie A (esempi principali)
 INSERT INTO rivalries (team1_id, team2_id, rivalry_name, rivalry_type, intensity) VALUES
@@ -109,13 +121,11 @@ COMMENT ON TABLE rivalries IS 'Definizione rivalità/derby tra squadre per calco
 COMMENT ON FUNCTION is_derby_match IS 'Verifica se una partita è un derby e restituisce dettagli rivalità';
 ```
 
-**Step 2: Eseguire migrazione su Supabase**
+**Step 3: Eseguire migrazione**
 
 Run: Accedere a Supabase SQL Editor ed eseguire il contenuto di `database/migrations/001_derby_rivalries.sql`
 
-Expected: Tabella `rivalries` creata con dati iniziali, funzione `is_derby_match` disponibile
-
-**Step 3: Verificare creazione tabella**
+**Step 4: Verificare creazione**
 
 Run (in SQL Editor):
 ```sql
@@ -128,240 +138,27 @@ SELECT * FROM is_derby_match(
 
 Expected: Lista rivalità e risultato `is_derby=TRUE, rivalry_name='Derby della Madonnina', intensity=3`
 
-**Step 4: Commit**
+**Step 5: Commit**
 
 ```bash
 git add database/migrations/001_derby_rivalries.sql
-git commit -m "$(cat <<'EOF'
-feat(db): add rivalries table for derby detection
+git commit -m "feat(db): add rivalries table for derby detection
 
 - Create rivalries table with team pairs and intensity levels
 - Add is_derby_match() function for quick lookup
 - Seed with Serie A and La Liga main derbies
 
-Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>
-EOF
-)"
+Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
 ```
 
 ---
 
-## Task 2: Derby Flag - Integrazione nel Server MCP
+## Task 2: League Baselines - Vista e Funzione
 
 **Files:**
-- Modify: `mcp_server.py:398-625` (funzione analyze_match_risk)
+- Create: `database/migrations/002_league_baselines.sql`
 
-**Step 1: Leggere il file corrente per conferma**
-
-Run: Verificare che `mcp_server.py` contenga la funzione `analyze_match_risk` alla linea ~398
-
-**Step 2: Aggiungere query derby e moltiplicatore**
-
-Modificare `mcp_server.py`, aggiungendo dopo la riga 467 (dopo `analysis["team_stats"] = team_fouls`):
-
-```python
-        # --- VERIFICA DERBY ---
-        derby_info = None
-        derby_multiplier = 1.0
-        try:
-            # Trova ID squadre
-            home_team_result = supabase.table("teams").select("id").ilike("name", f"%{home_team}%").limit(1).execute()
-            away_team_result = supabase.table("teams").select("id").ilike("name", f"%{away_team}%").limit(1).execute()
-
-            if home_team_result.data and away_team_result.data:
-                home_id = home_team_result.data[0]["id"]
-                away_id = away_team_result.data[0]["id"]
-
-                derby_result = supabase.rpc(
-                    "is_derby_match",
-                    {"p_home_team_id": home_id, "p_away_team_id": away_id}
-                ).execute()
-
-                if derby_result.data and len(derby_result.data) > 0:
-                    d = derby_result.data[0]
-                    if d.get("is_derby"):
-                        derby_info = {
-                            "name": d.get("rivalry_name"),
-                            "type": d.get("rivalry_type"),
-                            "intensity": d.get("intensity")
-                        }
-                        # Moltiplicatore basato su intensità: 1=+10%, 2=+20%, 3=+25%
-                        intensity = d.get("intensity", 1)
-                        derby_multiplier = 1.0 + (intensity * 0.08 + 0.02)  # 1.10, 1.18, 1.26
-        except Exception:
-            pass  # Derby check failed, continue without
-
-        analysis["derby"] = derby_info
-        analysis["derby_multiplier"] = derby_multiplier
-```
-
-**Step 3: Applicare moltiplicatore nel calcolo score**
-
-Modificare la sezione del calcolo score (dopo riga ~577), cambiando:
-
-```python
-                # SCORE COMBINATO (con moltiplicatore derby)
-                if referee:
-                    combined_score = (
-                        seasonal_score * WEIGHT_SEASONAL +
-                        referee_score * WEIGHT_REFEREE +
-                        h2h_score * WEIGHT_H2H +
-                        fouls_score * WEIGHT_FOULS
-                    ) * derby_multiplier
-                else:
-                    combined_score = (
-                        seasonal_score * WEIGHT_SEASONAL_NO_REF +
-                        h2h_score * WEIGHT_H2H_NO_REF +
-                        fouls_score * WEIGHT_FOULS_NO_REF
-                    ) * derby_multiplier
-
-                # Cap a 100
-                combined_score = min(combined_score, 100)
-```
-
-**Step 4: Testare manualmente**
-
-Run:
-```bash
-cd /home/salvatore/Scrivania/soccer
-./venv/bin/python -c "
-from mcp_server import analyze_match_risk
-import json
-result = json.loads(analyze_match_risk('Inter', 'Milan'))
-print('Derby info:', result.get('derby'))
-print('Derby multiplier:', result.get('derby_multiplier'))
-print('Top player score:', result['overall_top5'][0]['combined_score'] if result.get('overall_top5') else 'N/A')
-"
-```
-
-Expected: `Derby info: {'name': 'Derby della Madonnina', 'type': 'DERBY', 'intensity': 3}`, `Derby multiplier: 1.26`
-
-**Step 5: Commit**
-
-```bash
-git add mcp_server.py
-git commit -m "$(cat <<'EOF'
-feat(mcp): integrate derby detection in match risk analysis
-
-- Query rivalries table to detect derby matches
-- Apply intensity-based multiplier (10-26%) to risk scores
-- Add derby info to analysis output
-
-Research shows derby matches have 20-30% more cards than regular matches.
-
-Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>
-EOF
-)"
-```
-
----
-
-## Task 3: Home/Away Factor
-
-**Files:**
-- Modify: `mcp_server.py:398-625` (funzione analyze_match_risk)
-
-**Step 1: Aggiungere costanti per fattore casa/trasferta**
-
-Dopo le costanti dei pesi (riga ~427), aggiungere:
-
-```python
-    # Fattori casa/trasferta (basati su studio CIES: 53% cartellini alla trasferta)
-    HOME_FACTOR = 0.94   # Squadra di casa riceve ~6% meno cartellini
-    AWAY_FACTOR = 1.06   # Squadra in trasferta riceve ~6% più cartellini
-```
-
-**Step 2: Applicare fattore nel loop giocatori**
-
-Modificare il loop (riga ~502), aggiungendo dopo `for team_data, team_name in [(home_result.data...`:
-
-```python
-        for team_data, team_name, is_home in [
-            (home_result.data or [], home_team, True),
-            (away_result.data or [], away_team, False)
-        ]:
-            # Fattore casa/trasferta
-            home_away_factor = HOME_FACTOR if is_home else AWAY_FACTOR
-```
-
-E modificare il calcolo score per applicare il fattore:
-
-```python
-                # SCORE COMBINATO (con moltiplicatori)
-                base_score = 0
-                if referee:
-                    base_score = (
-                        seasonal_score * WEIGHT_SEASONAL +
-                        referee_score * WEIGHT_REFEREE +
-                        h2h_score * WEIGHT_H2H +
-                        fouls_score * WEIGHT_FOULS
-                    )
-                else:
-                    base_score = (
-                        seasonal_score * WEIGHT_SEASONAL_NO_REF +
-                        h2h_score * WEIGHT_H2H_NO_REF +
-                        fouls_score * WEIGHT_FOULS_NO_REF
-                    )
-
-                # Applica moltiplicatori
-                combined_score = base_score * home_away_factor * derby_multiplier
-                combined_score = min(combined_score, 100)
-```
-
-**Step 3: Aggiungere info nel breakdown**
-
-Nel `player_data` dict, aggiungere:
-
-```python
-                    "is_home": is_home,
-                    "home_away_factor": home_away_factor,
-```
-
-**Step 4: Testare**
-
-Run:
-```bash
-cd /home/salvatore/Scrivania/soccer
-./venv/bin/python -c "
-from mcp_server import analyze_match_risk
-import json
-result = json.loads(analyze_match_risk('Roma', 'Napoli'))
-home_player = result['home_team_top5'][0] if result.get('home_team_top5') else None
-away_player = result['away_team_top5'][0] if result.get('away_team_top5') else None
-print('Home player factor:', home_player.get('home_away_factor') if home_player else 'N/A')
-print('Away player factor:', away_player.get('home_away_factor') if away_player else 'N/A')
-"
-```
-
-Expected: `Home player factor: 0.94`, `Away player factor: 1.06`
-
-**Step 5: Commit**
-
-```bash
-git add mcp_server.py
-git commit -m "$(cat <<'EOF'
-feat(mcp): add home/away factor to risk calculation
-
-- Home team players: 0.94x multiplier (6% less cards)
-- Away team players: 1.06x multiplier (6% more cards)
-- Based on CIES study: 53% of cards go to away teams globally
-
-Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>
-EOF
-)"
-```
-
----
-
-## Task 4: League Baseline Normalization
-
-**Files:**
-- Modify: `mcp_server.py:398-625` (funzione analyze_match_risk)
-- Modify: `database/analysis_views.sql` (aggiungere vista league_baselines)
-
-**Step 1: Creare vista league_baselines nel database**
-
-Creare file `database/migrations/002_league_baselines.sql`:
+**Step 1: Creare file migrazione**
 
 ```sql
 -- database/migrations/002_league_baselines.sql
@@ -418,79 +215,38 @@ COMMENT ON FUNCTION get_league_normalization IS 'Restituisce fattore normalizzaz
 
 **Step 2: Eseguire migrazione**
 
-Run: Eseguire `database/migrations/002_league_baselines.sql` in Supabase SQL Editor
+Run: Eseguire in Supabase SQL Editor
 
-**Step 3: Modificare analyze_match_risk per usare normalizzazione**
+**Step 3: Verificare**
 
-Aggiungere dopo le query iniziali (riga ~440):
-
-```python
-        # --- BASELINE LEGA ---
-        league_factor = 1.0
-        competition_code = None
-        try:
-            # Determina la competizione dalla squadra di casa
-            comp_result = supabase.table("matches").select(
-                "competitions!inner(code)"
-            ).ilike("home_team.name", f"%{home_team}%").eq(
-                "season", "2025-2026"
-            ).limit(1).execute()
-
-            if comp_result.data and len(comp_result.data) > 0:
-                competition_code = comp_result.data[0].get("competitions", {}).get("code")
-
-                if competition_code:
-                    factor_result = supabase.rpc(
-                        "get_league_normalization",
-                        {"p_competition_code": competition_code}
-                    ).execute()
-                    if factor_result.data:
-                        league_factor = float(factor_result.data)
-        except Exception:
-            pass  # League baseline query failed
-
-        analysis["competition"] = competition_code
-        analysis["league_factor"] = league_factor
+```sql
+SELECT * FROM league_card_baselines;
+SELECT get_league_normalization('PD');  -- Expected: 1.30
+SELECT get_league_normalization('SA');  -- Expected: 1.00
 ```
 
-**Step 4: Applicare fattore nel calcolo**
-
-Modificare il calcolo score:
-
-```python
-                # Applica tutti i moltiplicatori
-                combined_score = base_score * home_away_factor * derby_multiplier * league_factor
-                combined_score = min(combined_score, 100)
-```
-
-**Step 5: Commit**
+**Step 4: Commit**
 
 ```bash
-git add database/migrations/002_league_baselines.sql mcp_server.py
-git commit -m "$(cat <<'EOF'
-feat: add league baseline normalization
+git add database/migrations/002_league_baselines.sql
+git commit -m "feat(db): add league baseline normalization
 
 - Create league_card_baselines view with research-based values
 - La Liga highest (1.30x), Bundesliga lowest (0.95x)
 - Serie A as baseline (1.0x)
-- Apply normalization factor to risk scores
+- Add get_league_normalization() function
 
-Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>
-EOF
-)"
+Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
 ```
 
 ---
 
-## Task 5: Referee League Delta (Outlier Detection)
+## Task 3: Referee Delta - Outlier Detection
 
 **Files:**
-- Modify: `database/analysis_views.sql` (aggiungere colonna ref_league_delta)
-- Modify: `mcp_server.py` (usare delta nel calcolo)
+- Create: `database/migrations/003_referee_delta.sql`
 
-**Step 1: Creare migrazione per ref_league_delta**
-
-Creare `database/migrations/003_referee_delta.sql`:
+**Step 1: Creare file migrazione**
 
 ```sql
 -- database/migrations/003_referee_delta.sql
@@ -585,328 +341,37 @@ COMMENT ON FUNCTION get_referee_profile IS 'Restituisce profilo arbitro con delt
 
 Run: Eseguire in Supabase SQL Editor
 
-**Step 3: Integrare nel server MCP**
+**Step 3: Verificare**
 
-Modificare sezione arbitro in `mcp_server.py` (dopo riga ~478):
-
-```python
-            # Profilo arbitro (delta rispetto a lega)
-            if referee:
-                try:
-                    profile_result = supabase.rpc(
-                        "get_referee_profile",
-                        {"p_referee_name": referee}
-                    ).execute()
-
-                    if profile_result.data and len(profile_result.data) > 0:
-                        profile = profile_result.data[0]
-                        analysis["referee_profile"] = {
-                            "avg_yellows": float(profile.get("ref_avg_yellows") or 0),
-                            "league_avg": float(profile.get("league_avg_yellows") or 0),
-                            "delta": float(profile.get("ref_league_delta") or 0),
-                            "classification": profile.get("referee_profile")
-                        }
-
-                        # Aggiusta score arbitro in base a delta
-                        # Outlier severo: +15% al peso arbitro
-                        # Outlier permissivo: -15% al peso arbitro
-                        ref_delta = float(profile.get("ref_league_delta") or 0)
-                        if ref_delta > 1.0:
-                            analysis["referee_adjustment"] = 1.15
-                        elif ref_delta < -1.0:
-                            analysis["referee_adjustment"] = 0.85
-                        else:
-                            analysis["referee_adjustment"] = 1.0
-                except Exception:
-                    analysis["referee_adjustment"] = 1.0
+```sql
+SELECT * FROM referee_league_comparison WHERE competition_code = 'SA' LIMIT 10;
+SELECT * FROM get_referee_profile('Maresca');
 ```
 
-**Step 4: Applicare adjustment**
-
-Modificare calcolo referee_score:
-
-```python
-                if referee and player_name_lower in referee_data:
-                    ref_info = referee_data[player_name_lower]
-                    referee_score = ref_info["booking_percentage"] * analysis.get("referee_adjustment", 1.0)
-```
-
-**Step 5: Commit**
+**Step 4: Commit**
 
 ```bash
-git add database/migrations/003_referee_delta.sql mcp_server.py
-git commit -m "$(cat <<'EOF'
-feat: add referee outlier detection with league delta
+git add database/migrations/003_referee_delta.sql
+git commit -m "feat(db): add referee outlier detection with league delta
 
 - Create referee_league_comparison view
 - Calculate ref_league_delta (avg vs league avg)
 - Classify referees: STRICT_OUTLIER, LENIENT_OUTLIER, AVERAGE
-- Apply ±15% adjustment for outlier referees
+- Add get_referee_profile() function
 
 Research: ~23% of referees are statistical outliers.
 
-Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>
-EOF
-)"
+Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
 ```
 
 ---
 
-## Task 6: Matchup Posizionale (Pace Differential)
-
-**Files:**
-- Modify: `mcp_server.py` (aggiungere logica matchup)
-
-**Step 1: Definire matchup rischiosi**
-
-Aggiungere costanti dopo i pesi (riga ~435):
-
-```python
-    # Matchup posizionali rischiosi (ricerca: SPA = Stopping Promising Attack)
-    # Terzini vs ali veloci = alto rischio SPA
-    RISKY_MATCHUPS = {
-        # (posizione_difensore, posizione_attaccante_avversario): bonus_rischio
-        ("Defence", "Offence"): 0.10,      # Difensore vs Attaccante: +10%
-        ("Midfield", "Offence"): 0.08,     # Centrocampista vs Attaccante: +8%
-        ("Defence", "Midfield"): 0.05,     # Difensore vs Centrocampista: +5%
-    }
-
-    # Giocatori noti per creare falli (dribblatori, velocisti)
-    # Questi dati potrebbero venire da un'API o tabella dedicata
-    HIGH_FOUL_DRAWERS = {
-        "vinícius": 1.15,
-        "vinicius": 1.15,
-        "rafael leao": 1.12,
-        "leao": 1.12,
-        "khvicha kvaratskhelia": 1.12,
-        "kvaratskhelia": 1.12,
-        "doku": 1.10,
-        "saka": 1.10,
-        "yamal": 1.08,
-    }
-```
-
-**Step 2: Calcolare opponent foul drawing**
-
-Aggiungere dopo le query squadra (riga ~465):
-
-```python
-        # --- OPPONENT FOUL DRAWING ---
-        # Calcola quanto l'avversario tende a subire falli
-        opponent_foul_factor = {}
-        for team, opponent in [(home_team, away_team), (away_team, home_team)]:
-            try:
-                opp_result = supabase.table("player_season_cards").select(
-                    "player_name"
-                ).ilike("team_name", f"%{opponent}%").eq(
-                    "season", "2025-2026"
-                ).execute()
-
-                factor = 1.0
-                if opp_result.data:
-                    for p in opp_result.data:
-                        pname = p.get("player_name", "").lower()
-                        for foul_drawer, bonus in HIGH_FOUL_DRAWERS.items():
-                            if foul_drawer in pname:
-                                factor = max(factor, bonus)
-
-                opponent_foul_factor[team.lower()] = factor
-            except Exception:
-                opponent_foul_factor[team.lower()] = 1.0
-
-        analysis["opponent_foul_factors"] = opponent_foul_factor
-```
-
-**Step 3: Applicare matchup nel calcolo score**
-
-Nel loop giocatori, dopo `position_multiplier`:
-
-```python
-                # Matchup bonus (SPA risk)
-                matchup_bonus = 1.0
-                opponent_name = away_team if is_home else home_team
-
-                # Bonus se l'avversario ha foul drawers
-                matchup_bonus *= opponent_foul_factor.get(team_name.lower(), 1.0)
-
-                # Bonus posizionale
-                if position in ["Defence", "Midfield"]:
-                    # Difensori e centrocampisti rischiano SPA contro attaccanti veloci
-                    matchup_bonus *= 1.05  # +5% base per ruoli difensivi
-```
-
-E nel calcolo finale:
-
-```python
-                combined_score = base_score * home_away_factor * derby_multiplier * league_factor * matchup_bonus
-```
-
-**Step 4: Aggiungere al breakdown**
-
-```python
-                    "matchup": {
-                        "bonus": round(matchup_bonus, 2),
-                        "opponent_foul_factor": opponent_foul_factor.get(team_name.lower(), 1.0)
-                    }
-```
-
-**Step 5: Testare**
-
-Run:
-```bash
-cd /home/salvatore/Scrivania/soccer
-./venv/bin/python -c "
-from mcp_server import analyze_match_risk
-import json
-# Test con squadra che ha Leao (Milan)
-result = json.loads(analyze_match_risk('Inter', 'Milan'))
-print('Opponent foul factors:', result.get('opponent_foul_factors'))
-# I difensori dell'Inter dovrebbero avere matchup bonus > 1.0
-for p in result.get('home_team_top5', [])[:2]:
-    print(f\"{p['name']}: matchup={p.get('breakdown',{}).get('matchup')}\")
-"
-```
-
-Expected: `Opponent foul factors: {'inter': 1.12, 'milan': ...}` (Leao = 1.12)
-
-**Step 6: Commit**
-
-```bash
-git add mcp_server.py
-git commit -m "$(cat <<'EOF'
-feat(mcp): add positional matchup analysis
-
-- Define risky matchups (defenders vs forwards = SPA risk)
-- Track high foul-drawing players (Vinicius, Leao, etc.)
-- Apply matchup bonus to defenders facing tricky wingers
-- Add matchup breakdown to player analysis
-
-Research: Pace differential between fullback and winger is key SPA predictor.
-
-Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>
-EOF
-)"
-```
-
----
-
-## Task 7: Aggiornare Documentazione
-
-**Files:**
-- Modify: `docs/SCORING.md`
-- Modify: `STATO_PROGETTO.md`
-
-**Step 1: Aggiornare SCORING.md**
-
-Aggiungere sezione "Moltiplicatori Contestuali":
-
-```markdown
-## Moltiplicatori Contestuali (v2 - Research-Based)
-
-Il sistema applica moltiplicatori basati su ricerca accademica (2024-2026).
-
-### Derby Multiplier
-
-| Intensità | Moltiplicatore | Esempio |
-|-----------|----------------|---------|
-| 1 (Normale) | ×1.10 | Rivalità regionali minori |
-| 2 (Sentito) | ×1.18 | Napoli-Juventus |
-| 3 (Storico) | ×1.26 | Derby della Madonnina, El Clásico |
-
-**Fonte:** Ricerca mostra +20-30% cartellini nei derby rispetto a partite standard.
-
-### Home/Away Factor
-
-| Situazione | Moltiplicatore |
-|------------|----------------|
-| Casa | ×0.94 |
-| Trasferta | ×1.06 |
-
-**Fonte:** Studio CIES su 101,491 partite: 53% cartellini alla trasferta.
-
-### League Baseline
-
-| Lega | Fattore | Gialli/Partita |
-|------|---------|----------------|
-| La Liga | ×1.30 | 5.33 |
-| Premier League | ×1.18 | 4.85 |
-| Serie A | ×1.00 | 4.10 (baseline) |
-| Bundesliga | ×0.95 | 3.90 |
-| Ligue 1 | ×0.89 | 3.65 |
-
-### Referee Delta
-
-| Profilo | Delta | Adjustment |
-|---------|-------|------------|
-| STRICT_OUTLIER | > +1.0 | ×1.15 |
-| LENIENT_OUTLIER | < -1.0 | ×0.85 |
-| AVERAGE | -1.0 to +1.0 | ×1.00 |
-
-**Fonte:** ~23% degli arbitri sono outlier statistici.
-
-### Matchup Bonus
-
-| Situazione | Bonus |
-|------------|-------|
-| Difensore vs Foul Drawer (Vinicius, Leao) | fino a ×1.15 |
-| Centrocampista difensivo | ×1.05 base |
-
-## Formula Completa v2
-
-```
-Score = Base_Score × Home_Away × Derby × League × Matchup
-
-Dove Base_Score = (Stagionale×35%) + (Arbitro×30%×Ref_Adj) + (H2H×15%) + (Falli×20%)
-```
-```
-
-**Step 2: Aggiornare STATO_PROGETTO.md**
-
-Aggiungere in cronologia:
-
-```markdown
-### 2026-01-27 (Sessione 6)
-- **Research-Based Improvements:**
-  - Task 1-2: Derby flag con tabella rivalità e moltiplicatore intensità
-  - Task 3: Fattore casa/trasferta (0.94/1.06)
-  - Task 4: Normalizzazione baseline per lega
-  - Task 5: Referee delta e outlier detection
-  - Task 6: Matchup posizionale (SPA risk)
-  - Task 7: Documentazione aggiornata
-- **Impatto stimato:** +15-25% accuratezza predittiva
-```
-
-**Step 3: Commit finale**
-
-```bash
-git add docs/SCORING.md STATO_PROGETTO.md
-git commit -m "$(cat <<'EOF'
-docs: update scoring documentation with research-based improvements
-
-- Add contextual multipliers section (derby, home/away, league, matchup)
-- Document referee delta and outlier detection
-- Update project status with session 6 changelog
-
-Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>
-EOF
-)"
-```
-
----
-
-## Task 8: Possession Differential Factor
-
-**Fonte:** Reddit r/SoccerBetting - "if you expect one team to dominate possession, you might see more fouling from the other team"
-
-**Logica:** La squadra con meno possesso palla deve rincorrere di più → commette più falli → più rischio cartellini per i suoi giocatori.
+## Task 4: Possession Factor - Vista e Funzione
 
 **Files:**
 - Create: `database/migrations/004_possession_factor.sql`
-- Modify: `mcp_server.py` (funzione analyze_match_risk)
 
-**Step 1: Creare vista per possesso medio squadra**
-
-Creare `database/migrations/004_possession_factor.sql`:
+**Step 1: Creare file migrazione**
 
 ```sql
 -- database/migrations/004_possession_factor.sql
@@ -1007,26 +472,189 @@ COMMENT ON FUNCTION get_possession_factor IS 'Calcola moltiplicatore rischio car
 
 **Step 2: Eseguire migrazione**
 
-Run: Eseguire `database/migrations/004_possession_factor.sql` in Supabase SQL Editor
+Run: Eseguire in Supabase SQL Editor
 
-**Step 3: Verificare creazione**
+**Step 3: Verificare**
 
-Run (in SQL Editor):
 ```sql
 -- Test vista
 SELECT * FROM team_possession_stats WHERE season = '2025-2026' ORDER BY avg_possession DESC LIMIT 10;
 
 -- Test funzione
 SELECT * FROM get_possession_factor('Inter', 'Napoli', '2025-2026');
+SELECT * FROM get_possession_factor('Atalanta', 'Bologna', '2025-2026');
 ```
 
-Expected: Inter ~55% possesso (factor ~0.95), Napoli ~52% possesso (factor ~0.98)
+**Step 4: Commit**
 
-**Step 4: Integrare nel server MCP**
+```bash
+git add database/migrations/004_possession_factor.sql
+git commit -m "feat(db): add possession differential factor
 
-Modificare `mcp_server.py`, aggiungendo dopo la sezione derby (circa riga 495):
+- Create team_possession_stats view for avg possession per team
+- Add get_possession_factor() function
+- Low possession teams: up to +15% card risk (more chasing)
+- High possession teams: up to -15% card risk (control game)
+
+Source: Reddit r/SoccerBetting insight on game flow and fouling patterns.
+
+Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
+```
+
+---
+
+## FASE B: INTEGRAZIONE SERVER MCP
+
+---
+
+## Task 5: Integrazione Completa in analyze_match_risk
+
+**Files:**
+- Modify: `mcp_server.py` (funzione analyze_match_risk, righe 398-625)
+
+Questa è l'unica modifica al server MCP. Integra TUTTI i nuovi fattori in un'unica modifica atomica:
+- Derby detection e moltiplicatore
+- Home/Away factor
+- League baseline normalization
+- Referee delta/outlier adjustment
+- Matchup posizionale (foul drawers)
+- Possession factor
+
+**Step 1: Leggere il file corrente**
+
+Run: `head -n 450 /home/salvatore/Scrivania/soccer/mcp_server.py`
+
+Verificare che `analyze_match_risk` inizi alla riga ~398.
+
+**Step 2: Sostituire la funzione analyze_match_risk**
+
+Sostituire l'intera funzione `analyze_match_risk` (righe 398-625) con la versione aggiornata che include tutti i nuovi fattori:
 
 ```python
+@mcp.tool()
+def analyze_match_risk(home_team: str, away_team: str, referee: str = None) -> str:
+    """
+    Analizza il rischio cartellino per una partita specifica.
+    Combina 4 fattori base con pesi + moltiplicatori contestuali (derby, home/away, league, possession, matchup).
+
+    Formula base: (stagionale×35%) + (arbitro×30%) + (H2H×15%) + (falli×20%)
+    Senza arbitro: (stagionale×45%) + (H2H×25%) + (falli×30%)
+
+    Moltiplicatori: home/away × derby × league × possession × matchup
+
+    Args:
+        home_team: Squadra di casa
+        away_team: Squadra in trasferta
+        referee: Nome arbitro (opzionale)
+
+    Returns:
+        Analisi completa con top 5 giocatori a rischio per squadra e breakdown score
+    """
+    supabase = get_supabase()
+
+    analysis = {
+        "match": f"{home_team} vs {away_team}",
+        "referee": referee or "Non designato",
+        "referee_stats": None,
+        "referee_profile": None,
+        "referee_note": None,
+        "team_stats": {},
+        "derby": None,
+        "competition": None,
+        "possession": None,
+        "multipliers": {},
+        "home_team_top5": [],
+        "away_team_top5": [],
+        "overall_top5": []
+    }
+
+    # === PESI BASE ===
+    WEIGHT_SEASONAL = 0.35
+    WEIGHT_REFEREE = 0.30
+    WEIGHT_H2H = 0.15
+    WEIGHT_FOULS = 0.20
+    # Pesi senza arbitro
+    WEIGHT_SEASONAL_NO_REF = 0.45
+    WEIGHT_H2H_NO_REF = 0.25
+    WEIGHT_FOULS_NO_REF = 0.30
+
+    DEFAULT_REFEREE_SCORE = 25
+    H2H_THRESHOLD = 25
+
+    # === FATTORI CASA/TRASFERTA (Studio CIES: 53% cartellini alla trasferta) ===
+    HOME_FACTOR = 0.94   # -6% per squadra di casa
+    AWAY_FACTOR = 1.06   # +6% per squadra in trasferta
+
+    # === FOUL DRAWERS (giocatori che attirano falli) ===
+    HIGH_FOUL_DRAWERS = {
+        "vinícius": 1.15, "vinicius": 1.15,
+        "rafael leao": 1.12, "leao": 1.12,
+        "khvicha kvaratskhelia": 1.12, "kvaratskhelia": 1.12,
+        "doku": 1.10, "saka": 1.10, "yamal": 1.08,
+    }
+
+    try:
+        # --- TROVA ID SQUADRE (serve per derby e altre query) ---
+        home_team_id = None
+        away_team_id = None
+        try:
+            home_team_result = supabase.table("teams").select("id").ilike("name", f"%{home_team}%").limit(1).execute()
+            away_team_result = supabase.table("teams").select("id").ilike("name", f"%{away_team}%").limit(1).execute()
+            if home_team_result.data:
+                home_team_id = home_team_result.data[0]["id"]
+            if away_team_result.data:
+                away_team_id = away_team_result.data[0]["id"]
+        except Exception:
+            pass
+
+        # --- VERIFICA DERBY ---
+        derby_multiplier = 1.0
+        if home_team_id and away_team_id:
+            try:
+                derby_result = supabase.rpc(
+                    "is_derby_match",
+                    {"p_home_team_id": home_team_id, "p_away_team_id": away_team_id}
+                ).execute()
+
+                if derby_result.data and len(derby_result.data) > 0:
+                    d = derby_result.data[0]
+                    if d.get("is_derby"):
+                        analysis["derby"] = {
+                            "name": d.get("rivalry_name"),
+                            "type": d.get("rivalry_type"),
+                            "intensity": d.get("intensity")
+                        }
+                        # Moltiplicatore: intensity 1=+10%, 2=+18%, 3=+26%
+                        intensity = d.get("intensity", 1)
+                        derby_multiplier = 1.0 + (intensity * 0.08 + 0.02)
+            except Exception:
+                pass
+
+        # --- LEAGUE BASELINE ---
+        league_factor = 1.0
+        competition_code = None
+        try:
+            # Determina competizione dalla squadra
+            comp_result = supabase.table("player_season_cards").select(
+                "competition_code"
+            ).ilike("team_name", f"%{home_team}%").eq(
+                "season", "2025-2026"
+            ).limit(1).execute()
+
+            if comp_result.data and len(comp_result.data) > 0:
+                competition_code = comp_result.data[0].get("competition_code")
+                analysis["competition"] = competition_code
+
+                if competition_code:
+                    factor_result = supabase.rpc(
+                        "get_league_normalization",
+                        {"p_competition_code": competition_code}
+                    ).execute()
+                    if factor_result.data is not None:
+                        league_factor = float(factor_result.data)
+        except Exception:
+            pass
+
         # --- POSSESSION FACTOR ---
         possession_factors = {"home": 1.0, "away": 1.0}
         try:
@@ -1053,92 +681,282 @@ Modificare `mcp_server.py`, aggiungendo dopo la sezione derby (circa riga 495):
                     "away_factor": possession_factors["away"]
                 }
         except Exception:
-            pass  # Possession query failed, use default 1.0
-```
+            pass
 
-**Step 5: Applicare fattore nel calcolo score**
+        # --- OPPONENT FOUL DRAWING ---
+        opponent_foul_factor = {}
+        for team, opponent in [(home_team, away_team), (away_team, home_team)]:
+            try:
+                opp_result = supabase.table("player_season_cards").select(
+                    "player_name"
+                ).ilike("team_name", f"%{opponent}%").eq(
+                    "season", "2025-2026"
+                ).execute()
 
-Nel loop giocatori, recuperare il fattore corretto:
+                factor = 1.0
+                if opp_result.data:
+                    for p in opp_result.data:
+                        pname = p.get("player_name", "").lower()
+                        for foul_drawer, bonus in HIGH_FOUL_DRAWERS.items():
+                            if foul_drawer in pname:
+                                factor = max(factor, bonus)
 
-```python
-            # Fattore possesso (chi ha meno possesso commette più falli)
+                opponent_foul_factor[team.lower()] = factor
+            except Exception:
+                opponent_foul_factor[team.lower()] = 1.0
+
+        # --- DATI STAGIONALI GIOCATORI ---
+        home_result = supabase.table("player_season_cards").select("*").ilike(
+            "team_name", f"%{home_team}%"
+        ).eq("season", "2025-2026").order("yellow_cards", desc=True).limit(15).execute()
+
+        away_result = supabase.table("player_season_cards").select("*").ilike(
+            "team_name", f"%{away_team}%"
+        ).eq("season", "2025-2026").order("yellow_cards", desc=True).limit(15).execute()
+
+        # --- STATISTICHE FALLI SQUADRA ---
+        team_fouls = {}
+        for team in [home_team, away_team]:
+            try:
+                fouls_result = supabase.rpc(
+                    "get_team_fouls_stats",
+                    {"p_team_name": team, "p_season": "2025-2026"}
+                ).execute()
+                if fouls_result.data and len(fouls_result.data) > 0:
+                    tf = fouls_result.data[0]
+                    team_fouls[team.lower()] = {
+                        "avg_fouls_per_match": float(tf.get("avg_fouls_per_match") or 0),
+                        "avg_yellows_per_match": float(tf.get("avg_yellows_per_match") or 0),
+                        "foul_to_card_pct": float(tf.get("foul_to_card_pct") or 0)
+                    }
+            except Exception:
+                pass
+
+        analysis["team_stats"] = team_fouls
+
+        # --- DATI ARBITRO ---
+        referee_data = {}
+        referee_adjustment = 1.0
+        if referee:
+            # Statistiche generali arbitro
+            ref_stats = supabase.table("referees").select(
+                "name, total_matches, total_yellows, avg_yellows_per_match"
+            ).ilike("name", f"%{referee}%").limit(1).execute()
+
+            if ref_stats.data and len(ref_stats.data) > 0:
+                analysis["referee_stats"] = ref_stats.data[0]
+
+            # Profilo arbitro (delta rispetto a lega)
+            try:
+                profile_result = supabase.rpc(
+                    "get_referee_profile",
+                    {"p_referee_name": referee}
+                ).execute()
+
+                if profile_result.data and len(profile_result.data) > 0:
+                    profile = profile_result.data[0]
+                    analysis["referee_profile"] = {
+                        "avg_yellows": float(profile.get("ref_avg_yellows") or 0),
+                        "league_avg": float(profile.get("league_avg_yellows") or 0),
+                        "delta": float(profile.get("ref_league_delta") or 0),
+                        "classification": profile.get("referee_profile")
+                    }
+
+                    # Adjustment per outlier
+                    ref_delta = float(profile.get("ref_league_delta") or 0)
+                    if ref_delta > 1.0:
+                        referee_adjustment = 1.15  # Severo: +15%
+                    elif ref_delta < -1.0:
+                        referee_adjustment = 0.85  # Permissivo: -15%
+            except Exception:
+                pass
+
+            # Storico arbitro-giocatori
+            ref_result = supabase.rpc(
+                "get_referee_player_cards",
+                {
+                    "p_referee_name": referee,
+                    "p_team1_name": home_team,
+                    "p_team2_name": away_team
+                }
+            ).execute()
+
+            if ref_result.data:
+                for r in ref_result.data:
+                    player_name = r.get("player_name", "").lower()
+                    referee_data[player_name] = {
+                        "times_booked": r.get("times_booked", 0),
+                        "matches_with_referee": r.get("matches_with_referee", 0),
+                        "booking_percentage": float(r.get("booking_percentage", 0))
+                    }
+
+        # Salva moltiplicatori globali per output
+        analysis["multipliers"] = {
+            "derby": round(derby_multiplier, 2),
+            "league": round(league_factor, 2),
+            "referee_adjustment": round(referee_adjustment, 2),
+            "opponent_foul_factors": opponent_foul_factor
+        }
+
+        # --- CALCOLO SCORE PER OGNI GIOCATORE ---
+        all_players = []
+
+        for team_data, team_name, is_home in [
+            (home_result.data or [], home_team, True),
+            (away_result.data or [], away_team, False)
+        ]:
+            # Fattori specifici per squadra
+            home_away_factor = HOME_FACTOR if is_home else AWAY_FACTOR
             possession_factor = possession_factors["home"] if is_home else possession_factors["away"]
+            matchup_bonus = opponent_foul_factor.get(team_name.lower(), 1.0)
+
+            # Stats falli squadra
+            team_fouls_data = team_fouls.get(team_name.lower(), {})
+            team_foul_to_card = team_fouls_data.get("foul_to_card_pct", 0)
+
+            for p in team_data:
+                player_name = p.get("player_name", "")
+                player_name_lower = player_name.lower()
+
+                # 1. SEASONAL SCORE
+                yellows_per_90 = float(p.get("yellows_per_90") or 0)
+                seasonal_score = min(yellows_per_90 * 100, 100)
+
+                # 2. REFEREE SCORE (con adjustment per outlier)
+                referee_score = 0
+                referee_info = None
+                if referee and player_name_lower in referee_data:
+                    ref_info = referee_data[player_name_lower]
+                    referee_score = ref_info["booking_percentage"] * referee_adjustment
+                    referee_info = f"{ref_info['times_booked']} in {ref_info['matches_with_referee']} partite"
+                elif referee:
+                    referee_score = DEFAULT_REFEREE_SCORE * referee_adjustment
+
+                # 3. H2H SCORE
+                h2h_score = 0
+                h2h_info = None
+                if seasonal_score > H2H_THRESHOLD:
+                    try:
+                        h2h_result = supabase.rpc(
+                            "get_head_to_head_cards",
+                            {
+                                "p_player_name": player_name,
+                                "p_team1_name": home_team,
+                                "p_team2_name": away_team
+                            }
+                        ).execute()
+
+                        if h2h_result.data and len(h2h_result.data) > 0:
+                            h2h = h2h_result.data[0]
+                            h2h_matches = h2h.get("total_h2h_matches", 0)
+                            h2h_yellows = h2h.get("total_yellows", 0)
+                            if h2h_matches > 0:
+                                h2h_score = (h2h_yellows / h2h_matches) * 100
+                                h2h_info = f"{h2h_yellows} in {h2h_matches} H2H"
+                    except Exception:
+                        pass
+
+                # 4. FOULS SCORE
+                position = p.get("position", "")
+                position_multiplier = 1.2 if position in ["Midfield", "Defence"] else 1.0
+
+                fouls_score = (
+                    (team_foul_to_card * 0.5) +
+                    (min(yellows_per_90 * 50, 50))
+                ) * position_multiplier
+                fouls_score = min(fouls_score, 100)
+
+                # === SCORE COMBINATO ===
+                if referee:
+                    base_score = (
+                        seasonal_score * WEIGHT_SEASONAL +
+                        referee_score * WEIGHT_REFEREE +
+                        h2h_score * WEIGHT_H2H +
+                        fouls_score * WEIGHT_FOULS
+                    )
+                else:
+                    base_score = (
+                        seasonal_score * WEIGHT_SEASONAL_NO_REF +
+                        h2h_score * WEIGHT_H2H_NO_REF +
+                        fouls_score * WEIGHT_FOULS_NO_REF
+                    )
+
+                # Applica TUTTI i moltiplicatori contestuali
+                combined_score = (
+                    base_score *
+                    home_away_factor *
+                    derby_multiplier *
+                    league_factor *
+                    possession_factor *
+                    matchup_bonus
+                )
+                combined_score = min(combined_score, 100)  # Cap a 100
+
+                player_data = {
+                    "name": player_name,
+                    "team": p.get("team_name"),
+                    "position": position,
+                    "is_home": is_home,
+                    "combined_score": round(combined_score, 1),
+                    "breakdown": {
+                        "seasonal": {
+                            "score": round(seasonal_score, 1),
+                            "yellows": p.get("yellow_cards", 0),
+                            "matches": p.get("matches_played", 0),
+                            "per_90": round(yellows_per_90, 2)
+                        },
+                        "referee": {
+                            "score": round(referee_score, 1),
+                            "detail": referee_info,
+                            "adjustment": round(referee_adjustment, 2)
+                        } if referee else None,
+                        "h2h": {
+                            "score": round(h2h_score, 1),
+                            "detail": h2h_info
+                        },
+                        "fouls": {
+                            "score": round(fouls_score, 1),
+                            "team_foul_to_card_pct": round(team_foul_to_card, 1),
+                            "position_multiplier": position_multiplier
+                        },
+                        "multipliers": {
+                            "home_away": round(home_away_factor, 2),
+                            "derby": round(derby_multiplier, 2),
+                            "league": round(league_factor, 2),
+                            "possession": round(possession_factor, 2),
+                            "matchup": round(matchup_bonus, 2)
+                        }
+                    }
+                }
+                all_players.append(player_data)
+
+        # Ordina per score combinato
+        all_players.sort(key=lambda x: x["combined_score"], reverse=True)
+
+        # Separa per squadra e prendi top 5
+        home_players = [p for p in all_players if home_team.lower() in p["team"].lower()]
+        away_players = [p for p in all_players if away_team.lower() in p["team"].lower()]
+
+        analysis["home_team_top5"] = home_players[:5]
+        analysis["away_team_top5"] = away_players[:5]
+        analysis["overall_top5"] = all_players[:5]
+
+        if not referee:
+            analysis["referee_note"] = "Arbitro non designato - analisi basata su dati stagionali, H2H e falli"
+
+        return json.dumps(analysis, indent=2, default=str, ensure_ascii=False)
+
+    except Exception as e:
+        return f"Errore nell'analisi: {str(e)}"
 ```
 
-E nel calcolo finale:
+**Step 3: Aggiornare docstring tool**
 
-```python
-                # Applica tutti i moltiplicatori
-                combined_score = base_score * home_away_factor * derby_multiplier * league_factor * matchup_bonus * possession_factor
-                combined_score = min(combined_score, 100)
-```
+Aggiornare anche la docstring della funzione per riflettere i nuovi fattori (già inclusa nel codice sopra).
 
-**Step 6: Aggiungere al breakdown**
-
-```python
-                    "possession_factor": possession_factor,
-```
-
-**Step 7: Testare**
+**Step 4: Testare**
 
 Run:
-```bash
-cd /home/salvatore/Scrivania/soccer
-./venv/bin/python -c "
-from mcp_server import analyze_match_risk
-import json
-
-# Test: squadra possesso vs squadra counter-attack
-result = json.loads(analyze_match_risk('Napoli', 'Atalanta'))
-print('Possession info:', result.get('possession'))
-print()
-print('Napoli (alto possesso) top player:')
-home = result.get('home_team_top5', [{}])[0]
-print(f\"  {home.get('name')}: poss_factor={home.get('breakdown',{}).get('possession_factor')}\")
-print()
-print('Atalanta (pressing aggressivo) top player:')
-away = result.get('away_team_top5', [{}])[0]
-print(f\"  {away.get('name')}: poss_factor={away.get('breakdown',{}).get('possession_factor')}\")
-"
-```
-
-Expected: Napoli factor < 1.0 (meno rischio), Atalanta factor > 1.0 (più rischio per pressing)
-
-**Step 8: Commit**
-
-```bash
-git add database/migrations/004_possession_factor.sql mcp_server.py
-git commit -m "$(cat <<'EOF'
-feat: add possession differential factor to risk calculation
-
-- Create team_possession_stats view for avg possession per team
-- Add get_possession_factor() function
-- Low possession teams: up to +15% card risk (more chasing)
-- High possession teams: up to -15% card risk (control game)
-
-Source: Reddit r/SoccerBetting insight on game flow and fouling patterns.
-
-Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>
-EOF
-)"
-```
-
----
-
-## Riepilogo Modifiche
-
-| Task | File Principali | Impatto |
-|------|-----------------|---------|
-| 1-2 | `001_derby_rivalries.sql`, `mcp_server.py` | Derby +10-26% |
-| 3 | `mcp_server.py` | Home -6%, Away +6% |
-| 4 | `002_league_baselines.sql`, `mcp_server.py` | Cross-league normalization |
-| 5 | `003_referee_delta.sql`, `mcp_server.py` | Outlier ±15% |
-| 6 | `mcp_server.py` | Matchup +5-15% |
-| 7 | `SCORING.md`, `STATO_PROGETTO.md` | Documentazione |
-| 8 | `004_possession_factor.sql`, `mcp_server.py` | Possession ±15% |
-
-## Test Finale Integrato
-
 ```bash
 cd /home/salvatore/Scrivania/soccer
 ./venv/bin/python -c "
@@ -1149,17 +967,236 @@ import json
 result = json.loads(analyze_match_risk('Inter', 'Milan', 'Maresca'))
 print('=== ANALISI INTER-MILAN (con Maresca) ===')
 print(f\"Derby: {result.get('derby')}\")
-print(f\"Derby multiplier: {result.get('derby_multiplier')}\")
-print(f\"League factor: {result.get('league_factor')}\")
-print(f\"Referee profile: {result.get('referee_profile')}\")
-print(f\"Opponent foul factors: {result.get('opponent_foul_factors')}\")
+print(f\"Competition: {result.get('competition')}\")
 print(f\"Possession: {result.get('possession')}\")
+print(f\"Multipliers: {result.get('multipliers')}\")
+print(f\"Referee profile: {result.get('referee_profile')}\")
 print()
 print('Top 3 rischio:')
 for p in result.get('overall_top5', [])[:3]:
     bd = p.get('breakdown', {})
-    print(f\"  {p['name']}: {p['combined_score']} (home={p.get('is_home')}, poss={bd.get('possession_factor')})\")
+    mults = bd.get('multipliers', {})
+    print(f\"  {p['name']}: {p['combined_score']} (home={p.get('is_home')}, ha={mults.get('home_away')}, poss={mults.get('possession')}, derby={mults.get('derby')})\")
 "
 ```
 
-Expected output: Scores più alti per trasferta, moltiplicatore derby 1.26, Maresca come STRICT_OUTLIER, possession factors basati su storico squadre.
+Expected output:
+- Derby: `{'name': 'Derby della Madonnina', 'type': 'DERBY', 'intensity': 3}`
+- Multipliers derby: 1.26
+- Home players: home_away=0.94
+- Away players: home_away=1.06
+- Possession factors basati su storico squadre
+
+**Step 5: Test senza derby**
+
+```bash
+./venv/bin/python -c "
+from mcp_server import analyze_match_risk
+import json
+
+result = json.loads(analyze_match_risk('Napoli', 'Atalanta'))
+print('=== NAPOLI-ATALANTA (no derby) ===')
+print(f\"Derby: {result.get('derby')}\")
+print(f\"Possession: {result.get('possession')}\")
+"
+```
+
+Expected: Derby = None, Possession factors presenti
+
+**Step 6: Commit**
+
+```bash
+git add mcp_server.py
+git commit -m "feat(mcp): integrate all research-based multipliers in analyze_match_risk
+
+Contextual multipliers added:
+- Derby detection: +10-26% based on intensity (1-3)
+- Home/Away factor: -6% home, +6% away (CIES study)
+- League baseline: normalize across leagues (La Liga +30%, Bundesliga -5%)
+- Referee outlier: ±15% for strict/lenient outliers
+- Possession factor: ±15% based on expected possession
+- Matchup bonus: up to +15% vs foul-drawing players (Vinicius, Leao, etc.)
+
+Formula: base_score × home_away × derby × league × possession × matchup
+
+Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
+```
+
+---
+
+## FASE C: DOCUMENTAZIONE
+
+---
+
+## Task 6: Aggiornare Documentazione
+
+**Files:**
+- Modify: `docs/SCORING.md`
+- Modify: `STATO_PROGETTO.md`
+
+**Step 1: Aggiornare SCORING.md**
+
+Aggiungere sezione "Moltiplicatori Contestuali" dopo la sezione "Formula Finale":
+
+```markdown
+## Moltiplicatori Contestuali (v2 - Research-Based)
+
+A partire dalla v2, il sistema applica moltiplicatori basati su ricerca accademica (2024-2026).
+
+### Formula Completa v2
+
+```
+Score = Base_Score × Home_Away × Derby × League × Possession × Matchup
+
+Dove Base_Score = (Stagionale×35%) + (Arbitro×30%×Ref_Adj) + (H2H×15%) + (Falli×20%)
+```
+
+### Derby Multiplier
+
+Partite tra squadre rivali hanno storicamente più cartellini.
+
+| Intensità | Moltiplicatore | Esempio |
+|-----------|----------------|---------|
+| 1 (Normale) | ×1.10 | Rivalità regionali minori |
+| 2 (Sentito) | ×1.18 | Napoli-Juventus |
+| 3 (Storico) | ×1.26 | Derby della Madonnina, El Clásico |
+
+**Fonte:** Ricerca mostra +20-30% cartellini nei derby rispetto a partite standard.
+
+### Home/Away Factor
+
+La squadra in trasferta riceve più cartellini.
+
+| Situazione | Moltiplicatore |
+|------------|----------------|
+| Casa | ×0.94 (-6%) |
+| Trasferta | ×1.06 (+6%) |
+
+**Fonte:** Studio CIES su 101,491 partite: 53% cartellini alla trasferta.
+
+### League Baseline
+
+Leghe diverse hanno culture arbitrali diverse.
+
+| Lega | Fattore | Gialli/Partita |
+|------|---------|----------------|
+| La Liga | ×1.30 | 5.33 |
+| Premier League | ×1.18 | 4.85 |
+| Serie A | ×1.00 | 4.10 (baseline) |
+| Champions League | ×1.02 | 4.20 |
+| Europa League | ×0.98 | 4.00 |
+| Bundesliga | ×0.95 | 3.90 |
+| Ligue 1 | ×0.89 | 3.65 |
+
+### Referee Delta (Outlier Detection)
+
+Arbitri che deviano significativamente dalla media della lega.
+
+| Profilo | Delta vs Media | Adjustment |
+|---------|----------------|------------|
+| STRICT_OUTLIER | > +1.0 gialli/partita | ×1.15 |
+| ABOVE_AVERAGE | +0.5 to +1.0 | ×1.00 |
+| AVERAGE | -0.5 to +0.5 | ×1.00 |
+| BELOW_AVERAGE | -1.0 to -0.5 | ×1.00 |
+| LENIENT_OUTLIER | < -1.0 gialli/partita | ×0.85 |
+
+**Fonte:** ~23% degli arbitri sono outlier statistici.
+
+### Possession Factor
+
+Squadre con meno possesso palla commettono più falli.
+
+| Possesso Medio | Fattore | Razionale |
+|----------------|---------|-----------|
+| 60%+ | ×0.90 | Controllo gioco, meno rincorse |
+| 55% | ×0.95 | Leggero vantaggio |
+| 50% | ×1.00 | Neutro |
+| 45% | ×1.05 | Più pressing |
+| 40% | ×1.10 | Molto difensivo, più falli |
+
+Formula: `1 + (50 - possesso%) × 0.01`, limitato a [0.85, 1.15]
+
+### Matchup Bonus (Foul Drawers)
+
+Giocatori avversari noti per attirare falli aumentano il rischio per i difensori.
+
+| Giocatore | Bonus Difensori Avversari |
+|-----------|---------------------------|
+| Vinícius Jr. | ×1.15 |
+| Rafael Leão | ×1.12 |
+| Kvaratskhelia | ×1.12 |
+| Doku | ×1.10 |
+| Saka | ×1.10 |
+| Yamal | ×1.08 |
+
+**Fonte:** SPA (Stopping Promising Attack) è il motivo più comune di cartellino.
+```
+
+**Step 2: Aggiornare STATO_PROGETTO.md**
+
+Aggiungere in cronologia:
+
+```markdown
+### 2026-01-27 (Sessione 6)
+- **Research-Based Improvements:**
+  - Task 1: Tabella `rivalries` per derby detection
+  - Task 2: Vista `league_card_baselines` per normalizzazione cross-league
+  - Task 3: Vista `referee_league_comparison` per outlier detection
+  - Task 4: Vista `team_possession_stats` e funzione `get_possession_factor()`
+  - Task 5: Integrazione completa in `analyze_match_risk()` con tutti i moltiplicatori
+  - Task 6: Documentazione aggiornata
+- **Nuovi moltiplicatori:** derby (×1.10-1.26), home/away (×0.94/1.06), league baseline, referee delta (±15%), possession (±15%), matchup bonus
+- **Impatto stimato:** +15-25% accuratezza predittiva
+```
+
+**Step 3: Commit**
+
+```bash
+git add docs/SCORING.md STATO_PROGETTO.md
+git commit -m "docs: update scoring documentation with research-based improvements
+
+- Add contextual multipliers section (derby, home/away, league, possession, matchup)
+- Document referee delta and outlier detection
+- Update project status with session 6 changelog
+
+Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
+```
+
+---
+
+## Riepilogo Finale
+
+| Task | File Principali | Tipo | Impatto |
+|------|-----------------|------|---------|
+| 1 | `001_derby_rivalries.sql` | DB Migration | Derby +10-26% |
+| 2 | `002_league_baselines.sql` | DB Migration | Cross-league norm |
+| 3 | `003_referee_delta.sql` | DB Migration | Outlier ±15% |
+| 4 | `004_possession_factor.sql` | DB Migration | Possession ±15% |
+| 5 | `mcp_server.py` | Python | Integra TUTTO |
+| 6 | `SCORING.md`, `STATO_PROGETTO.md` | Docs | Documentazione |
+
+## Test Finale Integrato
+
+```bash
+cd /home/salvatore/Scrivania/soccer
+./venv/bin/python -c "
+from mcp_server import analyze_match_risk
+import json
+
+# Test completo: Derby Inter-Milan con Maresca
+result = json.loads(analyze_match_risk('Inter', 'Milan', 'Maresca'))
+print('=== TEST FINALE: INTER-MILAN ===')
+print(f\"Derby: {result.get('derby')}\")
+print(f\"Competition: {result.get('competition')}\")
+print(f\"Possession: {result.get('possession')}\")
+print(f\"Multipliers: {result.get('multipliers')}\")
+print(f\"Referee profile: {result.get('referee_profile')}\")
+print()
+print('Top 5 rischio:')
+for i, p in enumerate(result.get('overall_top5', []), 1):
+    bd = p.get('breakdown', {})
+    mults = bd.get('multipliers', {})
+    print(f\"{i}. {p['name']} ({p['team']}): {p['combined_score']}\")
+    print(f\"   home_away={mults.get('home_away')}, derby={mults.get('derby')}, poss={mults.get('possession')}, matchup={mults.get('matchup')}\")
+"
+```

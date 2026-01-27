@@ -1,7 +1,7 @@
 # YellowOracle - Stato del Progetto
 
-**Ultimo aggiornamento:** 2026-01-27 10:00
-**Fase attuale:** Alpha v2 - Documentazione unificata
+**Ultimo aggiornamento:** 2026-01-27 15:30
+**Fase attuale:** Alpha v2 - Piano miglioramenti research-based pronto
 
 ---
 
@@ -87,7 +87,9 @@ soccer/
     ├── SCORING.md                    # Formule calcolo score
     ├── CLAUDE_WORKFLOW.md            # Logica flusso 3-fasi
     ├── CRON_SETUP.md                 # Setup cron
-    └── plans/archive/                # Design docs archiviati (9 file)
+    └── plans/
+        ├── 2026-01-27-research-improvements.md  # Piano miglioramenti (DA ESEGUIRE)
+        └── archive/                  # Design docs archiviati (9 file)
 ```
 
 ---
@@ -165,6 +167,13 @@ for t in ['competitions','teams','players','referees','matches','match_events','
 
 ## Prossimi Passi
 
+### PRIORITÀ 0: Research-Based Improvements
+Eseguire il piano in `docs/plans/2026-01-27-research-improvements.md`:
+```bash
+# Usa superpowers:executing-plans per implementare
+# 6 task, 3 fasi, impatto stimato +15-25% accuratezza
+```
+
 ### PRIORITÀ 1: Completare Sync
 ```bash
 # Completare Premier League
@@ -184,6 +193,24 @@ Migliorare UI Streamlit e deploy su cloud.
 ---
 
 ## Cronologia Sessioni
+
+### 2026-01-27 (Sessione 6)
+- **Piano Research-Based Improvements:**
+  - Analizzate ricerche accademiche su fattori predittivi cartellini
+  - Creato piano implementazione con 6 task in 3 fasi
+  - Piano salvato in `docs/plans/2026-01-27-research-improvements.md`
+- **Nuovi fattori pianificati:**
+  - Derby detection con tabella `rivalries` (+10-26%)
+  - Home/Away factor (×0.94/×1.06)
+  - League baseline normalization (La Liga +30%, Bundesliga -5%)
+  - Referee delta/outlier detection (±15%)
+  - Possession differential factor (±15%)
+  - Matchup bonus per foul drawers (Vinicius, Leao, etc.)
+- **Struttura piano:**
+  - Fase A: 4 migrazioni SQL (parallele)
+  - Fase B: Integrazione unica in `mcp_server.py`
+  - Fase C: Documentazione
+- **Stato:** Piano pronto, da eseguire
 
 ### 2026-01-27 (Sessione 5)
 - **Chiarimenti sync CL/EL:**
