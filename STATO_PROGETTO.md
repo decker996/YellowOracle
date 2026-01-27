@@ -1,6 +1,6 @@
 # YellowOracle - Stato del Progetto
 
-**Ultimo aggiornamento:** 2026-01-26 23:00
+**Ultimo aggiornamento:** 2026-01-27 10:00
 **Fase attuale:** Alpha v2 - Documentazione unificata
 
 ---
@@ -184,6 +184,15 @@ Migliorare UI Streamlit e deploy su cloud.
 ---
 
 ## Cronologia Sessioni
+
+### 2026-01-27 (Sessione 5)
+- **Chiarimenti sync CL/EL:**
+  - Analisi funzionamento upsert su `external_id`
+  - Squadre/giocatori già in DB vengono aggiornati, non duplicati
+  - API chiamate comunque (possibile ottimizzazione futura)
+- **Fix GitHub Actions:**
+  - Corretta descrizione fuorviante parametro `season`
+  - Era "per sync full" → ora "solo per incremental, full fa tutte"
 
 ### 2026-01-26 (Sessione 4 - Sera)
 - **Documentazione unificata:**
