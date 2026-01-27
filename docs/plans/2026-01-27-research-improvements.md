@@ -4,12 +4,131 @@
 
 **Goal:** Implementare 6 miglioramenti al modello di scoring basati su ricerche accademiche, per aumentare l'accuratezza predittiva del 15-25%.
 
-**Architecture:** Il piano è riorganizzato in 3 fasi:
+**Architecture:** Il piano è riorganizzato in 4 fasi:
+- **Fase 0 (Task 0):** Ricerca preliminare - ricerca web completa di tutti i derby per tutte le competizioni
 - **Fase A (Task 1-4):** Migrazioni database - creano tabelle, viste e funzioni SQL (eseguibili in parallelo)
 - **Fase B (Task 5):** Integrazione MCP - unica modifica a `mcp_server.py` che integra TUTTI i nuovi fattori
 - **Fase C (Task 6):** Documentazione
 
+**Prerequisito:** Il database deve essere popolato con le competizioni desiderate PRIMA di eseguire il piano.
+
 **Tech Stack:** PostgreSQL (Supabase), Python 3.x, FastMCP, SQL Views/Functions
+
+---
+
+## FASE 0: RICERCA PRELIMINARE
+
+---
+
+## Task 0: Ricerca Completa Derby e Rivalità
+
+**Prerequisito:** Questo task DEVE essere completato PRIMA di eseguire Task 1.
+
+**Obiettivo:** Ricercare sul web tutti i derby e le rivalità storiche per le 7 competizioni supportate, per popolare completamente la tabella `rivalries`.
+
+**Step 1: Ricerca Web per ogni competizione**
+
+Eseguire ricerche web complete per:
+
+| Competizione | Query di ricerca |
+|--------------|------------------|
+| Serie A (SA) | "Serie A derby rivalità lista completa", "Italian football derbies complete list" |
+| La Liga (PD) | "La Liga derbies rivalries complete list", "Spanish football derbies" |
+| Premier League (PL) | "Premier League derbies complete list", "English football rivalries" |
+| Bundesliga (BL1) | "Bundesliga derbies complete list", "German football rivalries" |
+| Ligue 1 (FL1) | "Ligue 1 derbies complete list", "French football rivalries" |
+| Champions League (CL) | "Champions League historic rivalries", "European football classic matches" |
+| Europa League (EL) | Usa le rivalità nazionali già trovate |
+
+**Step 2: Per ogni rivalità trovata, raccogliere:**
+
+- Nome squadra 1
+- Nome squadra 2
+- Nome del derby (se ha un nome specifico)
+- Tipo: `DERBY` (stessa città), `HISTORIC` (rivalità storica), `REGIONAL` (stessa regione)
+- Intensità: `1` (minore), `2` (sentito), `3` (storico/massima rivalità)
+
+**Step 3: Creare lista INSERT SQL**
+
+Per ogni rivalità, generare una riga SQL nel formato:
+
+```sql
+((SELECT id FROM teams WHERE name ILIKE '%NomeSquadra1%' LIMIT 1),
+ (SELECT id FROM teams WHERE name ILIKE '%NomeSquadra2%' LIMIT 1),
+ 'Nome Derby', 'TIPO', INTENSITA),
+```
+
+**Step 4: Verificare nomi squadre nel database**
+
+Prima di finalizzare, verificare che i nomi usati nelle query ILIKE corrispondano ai nomi effettivi nel database:
+
+```bash
+./venv/bin/python -c "
+from supabase import create_client
+import os
+from dotenv import load_dotenv
+load_dotenv()
+sb = create_client(os.getenv('SUPABASE_URL'), os.getenv('SUPABASE_KEY'))
+# Per ogni squadra trovata nella ricerca, verificare:
+result = sb.table('teams').select('name').ilike('name', '%NOME_SQUADRA%').execute()
+print(result.data)
+"
+```
+
+**Step 5: Aggiornare Task 1**
+
+Sostituire le INSERT di esempio nel Task 1 con la lista completa generata.
+
+**Competizioni da coprire (minimo):**
+
+**Serie A (SA):**
+- Derby della Madonnina (Inter-Milan)
+- Derby della Capitale (Roma-Lazio)
+- Derby della Mole (Juventus-Torino)
+- Derby d'Italia (Juventus-Inter)
+- Derby della Lanterna (Genoa-Sampdoria)
+- Derby del Sole (Napoli-Roma)
+- Derby dell'Appennino (Bologna-Fiorentina)
+- Napoli-Juventus (storica)
+- Fiorentina-Juventus (storica)
+- Verona-Chievo (se presenti)
+- Altri derby regionali...
+
+**La Liga (PD):**
+- El Clásico (Real Madrid-Barcelona)
+- Derby Madrileño (Real Madrid-Atlético)
+- Derby de Sevilla (Sevilla-Betis)
+- Derby Catalán (Barcelona-Espanyol)
+- Derby Vasco (Athletic Bilbao-Real Sociedad)
+- Valencia-Villarreal
+- Altri...
+
+**Premier League (PL):**
+- Manchester Derby (City-United)
+- North London Derby (Arsenal-Tottenham)
+- Merseyside Derby (Liverpool-Everton)
+- North West Derby (Liverpool-Manchester United)
+- London Derbies (Chelsea-Arsenal, Chelsea-Tottenham, ecc.)
+- Tyne-Wear Derby (Newcastle-Sunderland, se presenti)
+- West Midlands Derby (Aston Villa-Birmingham, se presenti)
+- M23 Derby (Brighton-Crystal Palace)
+- Altri...
+
+**Bundesliga (BL1):**
+- Der Klassiker (Bayern-Dortmund)
+- Revierderby (Dortmund-Schalke, se presenti)
+- Nordderby (Amburgo-Werder Brema, se presenti)
+- Rheinderby (Köln-Gladbach)
+- Altri...
+
+**Ligue 1 (FL1):**
+- Le Classique (PSG-Marseille)
+- Derby du Nord (Lille-Lens)
+- Derby Rhône-Alpes (Lyon-Saint-Étienne)
+- Choc des Olympiques (Lyon-Marseille)
+- Altri...
+
+**Output atteso:** Lista SQL completa con 50-100 rivalità da inserire nel Task 1.
 
 ---
 
@@ -18,6 +137,8 @@
 ---
 
 ## Task 1: Derby Rivalries - Tabella e Funzione
+
+> **IMPORTANTE:** Prima di eseguire questo task, assicurarsi che Task 0 sia completato e le INSERT siano state aggiornate con la lista completa dei derby.
 
 **Files:**
 - Create: `database/migrations/001_derby_rivalries.sql`
@@ -1168,12 +1289,24 @@ Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
 
 | Task | File Principali | Tipo | Impatto |
 |------|-----------------|------|---------|
+| 0 | Ricerca web | Prerequisito | Lista completa 50-100 derby |
 | 1 | `001_derby_rivalries.sql` | DB Migration | Derby +10-26% |
 | 2 | `002_league_baselines.sql` | DB Migration | Cross-league norm |
 | 3 | `003_referee_delta.sql` | DB Migration | Outlier ±15% |
 | 4 | `004_possession_factor.sql` | DB Migration | Possession ±15% |
 | 5 | `mcp_server.py` | Python | Integra TUTTO |
 | 6 | `SCORING.md`, `STATO_PROGETTO.md` | Docs | Documentazione |
+
+## Ordine di Esecuzione
+
+```
+1. Popolare database con tutte le competizioni desiderate
+2. Task 0: Ricerca web completa derby (OBBLIGATORIO)
+3. Task 1-4: Migrazioni SQL (parallele, dopo Task 0)
+4. Task 5: Integrazione MCP
+5. Task 6: Documentazione
+6. Test finale integrato
+```
 
 ## Test Finale Integrato
 
