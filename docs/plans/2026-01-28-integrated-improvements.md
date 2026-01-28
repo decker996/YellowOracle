@@ -15,6 +15,68 @@
 
 ---
 
+## Come Riprendere tra Sessioni
+
+Il piano è progettato per essere eseguito in sessioni separate. Ogni fase è indipendente.
+
+### Sessioni Consigliate
+
+| Sessione | Fasi | Durata | Comando per Claude |
+|----------|------|--------|-------------------|
+| 1 | 0 + A | ~50 min | `Esegui fase 0 e A del piano docs/plans/2026-01-28-integrated-improvements.md` |
+| 2 | B | ~30 min | `Esegui fase B del piano integrato` |
+| 3 | C | ~45 min | `Esegui fase C del piano integrato` |
+| 4 | D | ~15 min | `Esegui fase D del piano integrato` |
+
+### Stato Avanzamento
+
+Aggiorna questa checklist man mano che completi i task:
+
+- [ ] **Task 0:** Ricerca derby completata
+- [ ] **Task 1:** Migrazione `001_derby_rivalries.sql` eseguita
+- [ ] **Task 2:** Migrazione `002_league_baselines.sql` eseguita
+- [ ] **Task 3:** Migrazione `003_referee_delta.sql` eseguita
+- [ ] **Task 4:** Migrazione `004_possession_factor.sql` eseguita
+- [ ] **Task 5:** `mcp_server.py` aggiornato
+- [ ] **Task 6:** Pagina Arbitri aggiornata
+- [ ] **Task 7:** Pagina Analisi Partita riscritta
+- [ ] **Task 8:** Pagina Derby & Rivalità creata
+- [ ] **Task 9:** Pagina Statistiche Squadre creata
+- [ ] **Task 10:** Homepage aggiornata
+- [ ] **Task 11:** Documentazione aggiornata
+
+### Note Importanti
+
+1. **Task 1-4** richiedono esecuzione manuale in **Supabase SQL Editor**
+2. **Task 0** genera INSERT SQL da copiare in Task 1 prima di eseguirlo
+3. **Fase B** dipende da Fase A (le viste SQL devono esistere)
+4. **Fase C** dipende da Fase B (il MCP deve essere aggiornato)
+
+### Verifica Stato Database
+
+Prima di riprendere, verifica cosa è già stato fatto:
+
+```bash
+./venv/bin/python -c "
+from supabase import create_client
+import os
+from dotenv import load_dotenv
+load_dotenv()
+sb = create_client(os.getenv('SUPABASE_URL'), os.getenv('SUPABASE_KEY'))
+
+# Verifica tabelle/viste
+tables = ['rivalries', 'league_card_baselines', 'referee_league_comparison', 'team_possession_stats']
+for t in tables:
+    try:
+        result = sb.table(t).select('*').limit(1).execute()
+        print(f'✅ {t}: esiste ({len(result.data)} sample)')
+    except Exception as e:
+        print(f'❌ {t}: non esiste')
+"
+```
+
+---
+
 ## FASE 0: RICERCA PRELIMINARE
 
 ---
