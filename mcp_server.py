@@ -402,6 +402,13 @@ def analyze_match_risk(home_team: str, away_team: str, referee: str = None) -> s
     Combina 4 fattori con pesi: stagionale (35%), arbitro (30%), H2H (15%), falli (20%).
     Senza arbitro: stagionale (45%), H2H (25%), falli (30%).
 
+    Applica moltiplicatori contestuali:
+    - Derby: ×1.10-1.26 (basato su intensità)
+    - Home/Away: ×0.94 casa, ×1.06 trasferta
+    - League normalization: ×0.89-1.30
+    - Referee outlier: ×0.85-1.15
+    - Possession: ×0.85-1.15
+
     Args:
         home_team: Squadra di casa
         away_team: Squadra in trasferta
@@ -416,7 +423,17 @@ def analyze_match_risk(home_team: str, away_team: str, referee: str = None) -> s
         "match": f"{home_team} vs {away_team}",
         "referee": referee or "Non designato",
         "referee_stats": None,
+        "referee_profile": None,
         "referee_note": None,
+        "derby": None,
+        "possession": None,
+        "multipliers": {
+            "derby": 1.0,
+            "home_away": {"home": 0.94, "away": 1.06},
+            "league": 1.0,
+            "referee_adjustment": 1.0,
+            "possession": {"home": 1.0, "away": 1.0}
+        },
         "team_stats": {},
         "home_team_top5": [],
         "away_team_top5": [],
@@ -433,10 +450,124 @@ def analyze_match_risk(home_team: str, away_team: str, referee: str = None) -> s
     WEIGHT_H2H_NO_REF = 0.25
     WEIGHT_FOULS_NO_REF = 0.30
 
-    DEFAULT_REFEREE_SCORE = 25  # Fallback conservativo quando non c'è storico con arbitro
-    H2H_THRESHOLD = 25  # Soglia seasonal_score per query H2H (ottimizzazione)
+    DEFAULT_REFEREE_SCORE = 25
+    H2H_THRESHOLD = 25
+
+    # Moltiplicatori home/away (studio CIES)
+    HOME_MULTIPLIER = 0.94
+    AWAY_MULTIPLIER = 1.06
 
     try:
+        # === NUOVI FATTORI: DERBY DETECTION ===
+        derby_multiplier = 1.0
+        try:
+            # Trova team IDs
+            home_team_data = supabase.table("teams").select("id").ilike("name", f"%{home_team}%").limit(1).execute()
+            away_team_data = supabase.table("teams").select("id").ilike("name", f"%{away_team}%").limit(1).execute()
+
+            if home_team_data.data and away_team_data.data:
+                home_team_id = home_team_data.data[0]["id"]
+                away_team_id = away_team_data.data[0]["id"]
+
+                derby_result = supabase.rpc(
+                    "is_derby_match",
+                    {"p_home_team_id": home_team_id, "p_away_team_id": away_team_id}
+                ).execute()
+
+                if derby_result.data and len(derby_result.data) > 0:
+                    derby_info = derby_result.data[0]
+                    if derby_info.get("is_derby"):
+                        intensity = derby_info.get("intensity", 1)
+                        # Intensità 1=+10%, 2=+18%, 3=+26%
+                        derby_multiplier = 1.0 + (0.08 * intensity + 0.02)
+                        analysis["derby"] = {
+                            "is_derby": True,
+                            "name": derby_info.get("rivalry_name"),
+                            "type": derby_info.get("rivalry_type"),
+                            "intensity": intensity
+                        }
+                        analysis["multipliers"]["derby"] = round(derby_multiplier, 2)
+        except Exception:
+            pass  # Derby detection failed, continue without
+
+        # === NUOVI FATTORI: POSSESSION ===
+        home_possession_factor = 1.0
+        away_possession_factor = 1.0
+        try:
+            poss_result = supabase.rpc(
+                "get_possession_factor",
+                {"p_home_team_name": home_team, "p_away_team_name": away_team, "p_season": "2025-2026"}
+            ).execute()
+
+            if poss_result.data and len(poss_result.data) > 0:
+                poss = poss_result.data[0]
+                home_possession_factor = float(poss.get("home_possession_factor") or 1.0)
+                away_possession_factor = float(poss.get("away_possession_factor") or 1.0)
+                analysis["possession"] = {
+                    "home_avg": poss.get("home_avg_possession"),
+                    "home_style": poss.get("home_play_style"),
+                    "home_factor": home_possession_factor,
+                    "away_avg": poss.get("away_avg_possession"),
+                    "away_style": poss.get("away_play_style"),
+                    "away_factor": away_possession_factor,
+                    "diff": poss.get("expected_possession_diff")
+                }
+                analysis["multipliers"]["possession"] = {
+                    "home": home_possession_factor,
+                    "away": away_possession_factor
+                }
+        except Exception:
+            pass  # Possession query failed, continue without
+
+        # === NUOVI FATTORI: REFEREE PROFILE/OUTLIER ===
+        referee_adjustment = 1.0
+        if referee:
+            try:
+                ref_profile = supabase.rpc(
+                    "get_referee_profile",
+                    {"p_referee_name": referee}
+                ).execute()
+
+                if ref_profile.data and len(ref_profile.data) > 0:
+                    profile = ref_profile.data[0]
+                    delta = float(profile.get("ref_league_delta") or 0)
+                    # Ogni +0.5 gialli sopra media = +5% rischio, max ±15%
+                    referee_adjustment = max(0.85, min(1.15, 1.0 + (delta * 0.10)))
+                    analysis["referee_profile"] = {
+                        "classification": profile.get("referee_profile"),
+                        "delta": delta,
+                        "ref_avg": float(profile.get("ref_avg_yellows") or 0),
+                        "league_avg": float(profile.get("league_avg_yellows") or 0)
+                    }
+                    analysis["multipliers"]["referee_adjustment"] = round(referee_adjustment, 2)
+            except Exception:
+                pass  # Referee profile query failed, continue without
+
+        # === NUOVI FATTORI: LEAGUE BASELINE ===
+        league_multiplier = 1.0
+        try:
+            # Determina la competizione dalla squadra
+            team_comp = supabase.table("teams").select(
+                "competitions:teams_competitions(competition_id, competitions(code))"
+            ).ilike("name", f"%{home_team}%").limit(1).execute()
+
+            if team_comp.data and team_comp.data[0].get("competitions"):
+                # Prendi la prima competizione associata
+                comps = team_comp.data[0]["competitions"]
+                if comps and len(comps) > 0:
+                    comp_code = comps[0].get("competitions", {}).get("code")
+                    if comp_code:
+                        baseline = supabase.table("league_card_baselines").select(
+                            "normalization_factor"
+                        ).eq("competition_code", comp_code).limit(1).execute()
+
+                        if baseline.data and len(baseline.data) > 0:
+                            league_multiplier = float(baseline.data[0].get("normalization_factor") or 1.0)
+                            analysis["multipliers"]["league"] = league_multiplier
+                            analysis["competition"] = comp_code
+        except Exception:
+            pass  # League baseline query failed, continue without
+
         # --- DATI STAGIONALI GIOCATORI ---
         home_result = supabase.table("player_season_cards").select("*").ilike(
             "team_name", f"%{home_team}%"
@@ -462,14 +593,13 @@ def analyze_match_risk(home_team: str, away_team: str, referee: str = None) -> s
                         "foul_to_card_pct": float(tf.get("foul_to_card_pct") or 0)
                     }
             except Exception:
-                pass  # Team fouls query failed, continue without
+                pass
 
         analysis["team_stats"] = team_fouls
 
         # --- DATI ARBITRO (se disponibile) ---
         referee_data = {}
         if referee:
-            # Statistiche generali arbitro
             ref_stats = supabase.table("referees").select(
                 "name, total_matches, total_yellows, avg_yellows_per_match"
             ).ilike("name", f"%{referee}%").limit(1).execute()
@@ -477,7 +607,6 @@ def analyze_match_risk(home_team: str, away_team: str, referee: str = None) -> s
             if ref_stats.data and len(ref_stats.data) > 0:
                 analysis["referee_stats"] = ref_stats.data[0]
 
-            # Storico arbitro-giocatori
             ref_result = supabase.rpc(
                 "get_referee_player_cards",
                 {
@@ -499,10 +628,16 @@ def analyze_match_risk(home_team: str, away_team: str, referee: str = None) -> s
         # --- CALCOLO SCORE PER OGNI GIOCATORE ---
         all_players = []
 
-        for team_data, team_name in [(home_result.data or [], home_team), (away_result.data or [], away_team)]:
-            # Recupera stats falli squadra
+        for team_data, team_name, is_home in [
+            (home_result.data or [], home_team, True),
+            (away_result.data or [], away_team, False)
+        ]:
             team_fouls_data = team_fouls.get(team_name.lower(), {})
             team_foul_to_card = team_fouls_data.get("foul_to_card_pct", 0)
+
+            # Moltiplicatori per questa squadra
+            home_away_mult = HOME_MULTIPLIER if is_home else AWAY_MULTIPLIER
+            possession_mult = home_possession_factor if is_home else away_possession_factor
 
             for p in team_data:
                 player_name = p.get("player_name", "")
@@ -520,10 +655,9 @@ def analyze_match_risk(home_team: str, away_team: str, referee: str = None) -> s
                     referee_score = ref_info["booking_percentage"]
                     referee_info = f"{ref_info['times_booked']} in {ref_info['matches_with_referee']} partite"
                 elif referee:
-                    # Nessuno storico con arbitro
                     referee_score = DEFAULT_REFEREE_SCORE
 
-                # 3. H2H SCORE (15%) - query per i top candidati
+                # 3. H2H SCORE (15%)
                 h2h_score = 0
                 h2h_info = None
                 if seasonal_score > H2H_THRESHOLD:
@@ -545,42 +679,52 @@ def analyze_match_risk(home_team: str, away_team: str, referee: str = None) -> s
                                 h2h_score = (h2h_yellows / h2h_matches) * 100
                                 h2h_info = f"{h2h_yellows} in {h2h_matches} H2H"
                     except Exception:
-                        pass  # H2H query failed, continue without H2H data
+                        pass
 
-                # 4. FOULS SCORE (20%) - basato su falli squadra e ruolo
-                # Calcolo: (foul_to_card% squadra * 0.5) + (yellows_per_90 normalizzato * 0.5)
-                # Centrocampisti difensivi e difensori hanno bonus
+                # 4. FOULS SCORE (20%)
                 position = p.get("position", "")
                 position_multiplier = 1.0
                 if position in ["Midfield", "Defence"]:
-                    position_multiplier = 1.2  # +20% per ruoli più fallosi
+                    position_multiplier = 1.2
 
                 fouls_score = (
-                    (team_foul_to_card * 0.5) +  # Quanto la squadra trasforma falli in cartellini
-                    (min(yellows_per_90 * 50, 50))  # Propensione individuale
+                    (team_foul_to_card * 0.5) +
+                    (min(yellows_per_90 * 50, 50))
                 ) * position_multiplier
                 fouls_score = min(fouls_score, 100)
 
-                # SCORE COMBINATO
+                # SCORE BASE COMBINATO
                 if referee:
-                    combined_score = (
+                    base_score = (
                         seasonal_score * WEIGHT_SEASONAL +
                         referee_score * WEIGHT_REFEREE +
                         h2h_score * WEIGHT_H2H +
                         fouls_score * WEIGHT_FOULS
                     )
                 else:
-                    combined_score = (
+                    base_score = (
                         seasonal_score * WEIGHT_SEASONAL_NO_REF +
                         h2h_score * WEIGHT_H2H_NO_REF +
                         fouls_score * WEIGHT_FOULS_NO_REF
                     )
+
+                # APPLICA MOLTIPLICATORI CONTESTUALI
+                combined_score = base_score
+                combined_score *= derby_multiplier      # Derby: ×1.10-1.26
+                combined_score *= home_away_mult        # Home/Away: ×0.94/×1.06
+                combined_score *= referee_adjustment    # Referee outlier: ×0.85-1.15
+                combined_score *= possession_mult       # Possession: ×0.85-1.15
+                # League normalization già incorporata nei dati stagionali
+
+                # Cap a 100
+                combined_score = min(combined_score, 100)
 
                 player_data = {
                     "name": player_name,
                     "team": p.get("team_name"),
                     "position": position,
                     "combined_score": round(combined_score, 1),
+                    "base_score": round(base_score, 1),
                     "breakdown": {
                         "seasonal": {
                             "score": round(seasonal_score, 1),
@@ -600,6 +744,12 @@ def analyze_match_risk(home_team: str, away_team: str, referee: str = None) -> s
                             "score": round(fouls_score, 1),
                             "team_foul_to_card_pct": round(team_foul_to_card, 1),
                             "position_multiplier": position_multiplier
+                        },
+                        "multipliers": {
+                            "derby": derby_multiplier,
+                            "home_away": home_away_mult,
+                            "referee_adj": referee_adjustment,
+                            "possession": possession_mult
                         }
                     }
                 }

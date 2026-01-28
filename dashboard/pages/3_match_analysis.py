@@ -1,12 +1,19 @@
 """
-YellowOracle - Pagina Analisi Partita
+YellowOracle - Analisi Partita (v2 - MCP Integration)
+Usa analyze_match_risk per analisi completa con tutti i fattori
 """
 
 import streamlit as st
 import pandas as pd
+import json
 import os
+import sys
 from dotenv import load_dotenv
 from supabase import create_client, Client
+
+# Aggiungi path per import mcp_server
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+from mcp_server import analyze_match_risk
 
 load_dotenv()
 
@@ -18,207 +25,264 @@ def get_supabase_client() -> Client:
     key = os.getenv("SUPABASE_KEY")
     return create_client(url, key)
 
-def get_team_players_stats(supabase, team_name, season="2025-2026"):
-    """Recupera statistiche giocatori di una squadra."""
-    try:
-        result = supabase.table("player_season_cards").select("*").eq(
-            "team_name", team_name
-        ).eq("season", season).order("yellow_cards", desc=True).execute()
-        return result.data
-    except:
-        return []
 
-def get_referee_history(supabase, referee_name, team1_name, team2_name):
-    """Recupera storico arbitro-giocatore."""
-    try:
-        result = supabase.rpc(
-            "get_referee_player_cards",
-            {
-                "p_referee_name": referee_name,
-                "p_team1_name": team1_name,
-                "p_team2_name": team2_name
-            }
-        ).execute()
-        return result.data
-    except:
-        return []
+def render_match_info(result):
+    """Render card info partita con derby, arbitro, possesso."""
+    col1, col2 = st.columns(2)
 
-def get_h2h_history(supabase, player_name, team1_name, team2_name):
-    """Recupera storico scontri diretti per giocatore."""
-    try:
-        result = supabase.rpc(
-            "get_head_to_head_cards",
-            {
-                "p_player_name": player_name,
-                "p_team1_name": team1_name,
-                "p_team2_name": team2_name
-            }
-        ).execute()
-        return result.data
-    except:
-        return []
+    with col1:
+        # Derby info
+        derby = result.get("derby")
+        if derby and derby.get("is_derby"):
+            intensity = derby.get("intensity", 1)
+            stars = "⭐" * intensity
+            st.success(f"🔥 **{derby.get('name') or 'Derby'}** {stars}")
+            st.caption(f"Tipo: {derby.get('type')} | Moltiplicatore: ×{result.get('multipliers', {}).get('derby', 1.0)}")
+        else:
+            st.info("Partita regolare (no derby)")
+
+        # Possession info
+        poss = result.get("possession")
+        if poss:
+            home_style = poss.get("home_style", "N/A")
+            away_style = poss.get("away_style", "N/A")
+            st.markdown(f"""
+            **Possesso previsto:**
+            - Casa: {poss.get('home_avg', 50):.0f}% ({home_style}) → ×{poss.get('home_factor', 1.0)}
+            - Trasferta: {poss.get('away_avg', 50):.0f}% ({away_style}) → ×{poss.get('away_factor', 1.0)}
+            """)
+
+    with col2:
+        # Referee info
+        ref_stats = result.get("referee_stats")
+        ref_profile = result.get("referee_profile")
+
+        if ref_stats:
+            st.markdown(f"**Arbitro:** {ref_stats.get('name', 'N/A')}")
+            st.metric(
+                "Media gialli/partita",
+                f"{ref_stats.get('avg_yellows_per_match', 0):.1f}",
+                f"{ref_stats.get('total_matches', 0)} partite"
+            )
+
+            if ref_profile:
+                profile_type = ref_profile.get("classification", "")
+                delta = ref_profile.get("delta", 0)
+                badges = {
+                    "STRICT_OUTLIER": "🔴 SEVERO",
+                    "ABOVE_AVERAGE": "🟠 Sopra media",
+                    "AVERAGE": "⚪ Nella media",
+                    "BELOW_AVERAGE": "🟢 Sotto media",
+                    "LENIENT_OUTLIER": "🟢 PERMISSIVO"
+                }
+                st.markdown(f"**Profilo:** {badges.get(profile_type, profile_type)} (delta: {delta:+.2f})")
+        else:
+            st.warning("Arbitro non designato")
+
+
+def render_multipliers(result):
+    """Render multipliers come pills/badges."""
+    mults = result.get("multipliers", {})
+    derby = result.get("derby")
+
+    pills = []
+
+    if derby and derby.get("is_derby"):
+        pills.append(f"🔥 Derby ×{mults.get('derby', 1.0)}")
+
+    pills.append(f"🏠 Casa ×{mults.get('home_away', {}).get('home', 0.94)}")
+    pills.append(f"✈️ Trasf. ×{mults.get('home_away', {}).get('away', 1.06)}")
+
+    ref_adj = mults.get("referee_adjustment", 1.0)
+    if ref_adj != 1.0:
+        pills.append(f"👨‍⚖️ Arbitro ×{ref_adj}")
+
+    poss = mults.get("possession", {})
+    if poss.get("home", 1.0) != 1.0 or poss.get("away", 1.0) != 1.0:
+        pills.append(f"⚽ Poss. H×{poss.get('home', 1.0)} A×{poss.get('away', 1.0)}")
+
+    st.markdown("**Moltiplicatori attivi:** " + " ".join([f"`{p}`" for p in pills]))
+
+
+def render_top5(result):
+    """Render tabella top 5 con progress bar."""
+    top5 = result.get("overall_top5", [])
+    if not top5:
+        st.info("Nessun dato disponibile")
+        return
+
+    rows = []
+    for i, p in enumerate(top5, 1):
+        bd = p.get("breakdown", {})
+        rows.append({
+            "#": i,
+            "Giocatore": p.get("name"),
+            "Squadra": p.get("team", "")[:20],
+            "Ruolo": (p.get("position", "") or "")[:3].upper(),
+            "Score": p.get("combined_score", 0),
+            "Base": p.get("base_score", 0),
+            "Stagione": bd.get("seasonal", {}).get("score", 0),
+            "Arbitro": bd.get("referee", {}).get("score", 0) if bd.get("referee") else "-",
+            "H2H": bd.get("h2h", {}).get("score", 0),
+            "Falli": bd.get("fouls", {}).get("score", 0),
+        })
+
+    df = pd.DataFrame(rows)
+    st.dataframe(
+        df,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Score": st.column_config.ProgressColumn(
+                "Score",
+                min_value=0,
+                max_value=100,
+                format="%.1f"
+            ),
+            "Base": st.column_config.NumberColumn(format="%.1f"),
+            "Stagione": st.column_config.NumberColumn(format="%.1f"),
+            "H2H": st.column_config.NumberColumn(format="%.1f"),
+            "Falli": st.column_config.NumberColumn(format="%.1f"),
+        }
+    )
+
+    # Expander con breakdown dettagliato
+    with st.expander("📊 Breakdown dettagliato"):
+        for p in top5:
+            bd = p.get("breakdown", {})
+            mults = bd.get("multipliers", {})
+            seasonal = bd.get("seasonal", {})
+            st.markdown(f"""
+**{p.get('name')}** ({p.get('team')}) - Score: **{p.get('combined_score')}** (base: {p.get('base_score')})
+- Stagionale: {seasonal.get('per_90', 0):.2f} gialli/90 ({seasonal.get('yellows', 0)} in {seasonal.get('matches', 0)} partite) → {seasonal.get('score', 0):.1f}
+- Arbitro: {bd.get('referee', {}).get('detail') or 'N/A'} → {bd.get('referee', {}).get('score', 0) if bd.get('referee') else 'N/A'}
+- H2H: {bd.get('h2h', {}).get('detail') or 'N/A'} → {bd.get('h2h', {}).get('score', 0):.1f}
+- Falli: team_pct={bd.get('fouls', {}).get('team_foul_to_card_pct', 0):.1f}%, pos_mult={bd.get('fouls', {}).get('position_multiplier', 1.0)} → {bd.get('fouls', {}).get('score', 0):.1f}
+- Multipliers: derby={mults.get('derby', 1.0)}, home_away={mults.get('home_away', 1.0)}, ref={mults.get('referee_adj', 1.0)}, poss={mults.get('possession', 1.0)}
+---
+            """)
+
+
+def render_team_tabs(result, home_team, away_team):
+    """Render tabs per squadra."""
+    tab1, tab2 = st.tabs([f"🏠 {home_team}", f"✈️ {away_team}"])
+
+    for tab, team_key, team_name in [
+        (tab1, "home_team_top5", home_team),
+        (tab2, "away_team_top5", away_team)
+    ]:
+        with tab:
+            players = result.get(team_key, [])
+            if not players:
+                st.info(f"Nessun dato per {team_name}")
+                continue
+
+            rows = []
+            for p in players:
+                bd = p.get("breakdown", {})
+                rows.append({
+                    "Giocatore": p.get("name"),
+                    "Ruolo": p.get("position", ""),
+                    "Score": p.get("combined_score", 0),
+                    "Gialli Stagione": bd.get("seasonal", {}).get("yellows", 0),
+                    "Gialli/90": bd.get("seasonal", {}).get("per_90", 0),
+                })
+
+            df = pd.DataFrame(rows)
+            st.dataframe(
+                df,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Score": st.column_config.ProgressColumn(min_value=0, max_value=100, format="%.1f"),
+                    "Gialli/90": st.column_config.NumberColumn(format="%.2f"),
+                }
+            )
+
 
 def main():
     st.title("⚽ Analisi Partita")
-    st.markdown("Analisi pre-partita con i 3 fattori di rischio cartellino")
+    st.markdown("Analisi pre-partita con tutti i fattori di rischio cartellino")
 
     supabase = get_supabase_client()
 
-    # Carica dati per dropdown
-    teams_data = supabase.table("teams").select("id, name").order("name").execute()
+    # --- INPUT SECTION ---
+    teams_data = supabase.table("teams").select("name").order("name").execute()
     teams_list = [t["name"] for t in teams_data.data]
 
-    referees_data = supabase.table("referees").select("id, name").order("name").execute()
-    referees_list = ["Non specificato"] + [r["name"] for r in referees_data.data]
-
-    # Input partita
-    st.subheader("Seleziona la partita")
+    referees_data = supabase.table("referees").select("name").order("name").execute()
+    referees_list = ["Non designato"] + [r["name"] for r in referees_data.data]
 
     col1, col2, col3 = st.columns(3)
-
     with col1:
-        home_team = st.selectbox("Squadra Casa", teams_list if teams_list else ["Nessuna squadra"])
-
+        home_team = st.selectbox("Squadra Casa", teams_list)
     with col2:
-        away_team = st.selectbox("Squadra Trasferta", teams_list if teams_list else ["Nessuna squadra"],
-                                  index=1 if len(teams_list) > 1 else 0)
-
+        away_team = st.selectbox("Squadra Trasferta", teams_list, index=1 if len(teams_list) > 1 else 0)
     with col3:
         referee = st.selectbox("Arbitro", referees_list)
 
-    season = st.selectbox("Stagione di riferimento", ["2025-2026", "2024-2025", "2023-2024"])
-
-    if st.button("Analizza Partita", type="primary"):
+    if st.button("🔍 Analizza Partita", type="primary", use_container_width=True):
         if home_team == away_team:
             st.error("Seleziona due squadre diverse")
             return
 
+        # Chiama analyze_match_risk
+        ref_param = referee if referee != "Non designato" else None
+        with st.spinner("Analisi in corso..."):
+            result_json = analyze_match_risk(home_team, away_team, ref_param)
+
+        try:
+            result = json.loads(result_json)
+        except Exception as e:
+            st.error(f"Errore nel parsing: {e}")
+            st.code(result_json)
+            return
+
         st.markdown("---")
-        st.subheader(f"📊 Analisi: {home_team} vs {away_team}")
 
-        if referee != "Non specificato":
-            st.info(f"Arbitro: {referee}")
-        else:
-            st.warning("Arbitro non specificato - analisi basata solo su storico stagionale e scontri diretti")
+        # --- HEADER ---
+        st.header(f"📊 {result.get('match', '')}")
 
-        # Tab per le due squadre
-        tab1, tab2, tab3 = st.tabs([f"🏠 {home_team}", f"✈️ {away_team}", "🔥 Top Rischio"])
+        # --- INFO PARTITA CARD ---
+        render_match_info(result)
 
-        all_players_risk = []
+        st.markdown("---")
 
-        for tab, team_name, is_home in [(tab1, home_team, True), (tab2, away_team, False)]:
-            with tab:
-                st.markdown(f"### Giocatori {team_name}")
+        # --- MULTIPLIERS PILLS ---
+        render_multipliers(result)
 
-                # 1. Statistiche stagionali
-                players_stats = get_team_players_stats(supabase, team_name, season)
+        st.markdown("---")
 
-                if not players_stats:
-                    st.info(f"Nessuna statistica disponibile per {team_name}")
-                    continue
+        # --- TOP 5 TABLE ---
+        st.subheader("🎯 Top 5 Rischio Cartellino")
+        render_top5(result)
 
-                # 2. Storico con arbitro (se specificato)
-                referee_history = {}
-                if referee != "Non specificato":
-                    ref_data = get_referee_history(supabase, referee, home_team, away_team)
-                    for r in ref_data:
-                        referee_history[r["player_name"]] = r
+        st.markdown("---")
 
-                # 3. Costruisci tabella con indici di rischio
-                rows = []
-                for p in players_stats:
-                    player_name = p["player_name"]
+        # --- TEAM TABS ---
+        st.subheader("📋 Dettaglio per Squadra")
+        render_team_tabs(result, home_team, away_team)
 
-                    # Storico con arbitro
-                    ref_stats = referee_history.get(player_name, {})
-                    times_booked_by_ref = ref_stats.get("times_booked", 0)
-                    matches_with_ref = ref_stats.get("matches_with_referee", 0)
+        # --- LEGENDA ---
+        st.markdown("---")
+        with st.expander("📖 Glossario"):
+            st.markdown("""
+| Campo | Descrizione |
+|-------|-------------|
+| **Score** | Punteggio finale 0-100 con tutti i moltiplicatori applicati |
+| **Base** | Punteggio prima dei moltiplicatori contestuali |
+| **Stagione** | Contributo da gialli/90 minuti in stagione (peso 35%) |
+| **Arbitro** | Contributo da storico con arbitro designato (peso 30%) |
+| **H2H** | Contributo da cartellini negli scontri diretti (peso 15%) |
+| **Falli** | Contributo da propensione falli squadra + ruolo (peso 20%) |
 
-                    # Scontri diretti (query per ogni giocatore - ottimizzabile)
-                    h2h_data = get_h2h_history(supabase, player_name, home_team, away_team)
-                    h2h_yellows = h2h_data[0]["total_yellows"] if h2h_data else 0
-                    h2h_matches = h2h_data[0]["total_h2h_matches"] if h2h_data else 0
-
-                    # Calcola indice di rischio complessivo (semplificato)
-                    season_risk = float(p.get("yellows_per_90") or 0) * 100
-                    referee_risk = (times_booked_by_ref / matches_with_ref * 100) if matches_with_ref > 0 else 0
-                    h2h_risk = (h2h_yellows / h2h_matches * 100) if h2h_matches > 0 else 0
-
-                    # Peso: 40% stagione, 30% arbitro, 30% h2h
-                    if referee != "Non specificato":
-                        total_risk = season_risk * 0.4 + referee_risk * 0.3 + h2h_risk * 0.3
-                    else:
-                        total_risk = season_risk * 0.6 + h2h_risk * 0.4
-
-                    row = {
-                        "Giocatore": player_name,
-                        "Ruolo": p.get("position", ""),
-                        "Gialli Stagione": p.get("yellow_cards", 0),
-                        "Gialli/90": p.get("yellows_per_90", 0),
-                        "Amm. da Arbitro": f"{times_booked_by_ref}/{matches_with_ref}" if matches_with_ref > 0 else "-",
-                        "Gialli H2H": f"{h2h_yellows}/{h2h_matches}" if h2h_matches > 0 else "-",
-                        "Indice Rischio": round(total_risk, 1),
-                        "team": team_name
-                    }
-                    rows.append(row)
-                    all_players_risk.append(row)
-
-                if rows:
-                    df = pd.DataFrame(rows)
-                    df = df.sort_values("Indice Rischio", ascending=False)
-
-                    st.dataframe(
-                        df[["Giocatore", "Ruolo", "Gialli Stagione", "Gialli/90", "Amm. da Arbitro", "Gialli H2H", "Indice Rischio"]],
-                        use_container_width=True,
-                        hide_index=True,
-                        column_config={
-                            "Indice Rischio": st.column_config.ProgressColumn(
-                                "Indice Rischio",
-                                min_value=0,
-                                max_value=100,
-                                format="%.1f"
-                            )
-                        }
-                    )
-
-        # Tab Top Rischio
-        with tab3:
-            st.markdown("### 🔥 Top 10 Giocatori a Rischio Cartellino")
-
-            if all_players_risk:
-                df_all = pd.DataFrame(all_players_risk)
-                df_all = df_all.sort_values("Indice Rischio", ascending=False).head(10)
-
-                st.dataframe(
-                    df_all[["Giocatore", "team", "Ruolo", "Gialli/90", "Amm. da Arbitro", "Gialli H2H", "Indice Rischio"]].rename(
-                        columns={"team": "Squadra"}
-                    ),
-                    use_container_width=True,
-                    hide_index=True,
-                    column_config={
-                        "Indice Rischio": st.column_config.ProgressColumn(
-                            "Indice Rischio",
-                            min_value=0,
-                            max_value=100,
-                            format="%.1f"
-                        )
-                    }
-                )
-
-                # Evidenzia top 3
-                st.markdown("---")
-                st.markdown("### Raccomandazione")
-
-                top3 = df_all.head(3)
-                for i, (_, row) in enumerate(top3.iterrows(), 1):
-                    risk_emoji = "🔴" if row["Indice Rischio"] > 50 else "🟠" if row["Indice Rischio"] > 30 else "🟡"
-                    st.markdown(f"""
-                    **{i}. {row['Giocatore']}** ({row['team']}) {risk_emoji}
-                    - Rischio: **{row['Indice Rischio']:.1f}%**
-                    - Stagione: {row['Gialli/90']} gialli/90min
-                    - Arbitro: {row['Amm. da Arbitro']}
-                    - Scontri diretti: {row['Gialli H2H']}
-                    """)
+**Moltiplicatori contestuali:**
+- 🔥 Derby: ×1.10-1.26 basato su intensità rivalità
+- 🏠 Casa: ×0.94 (giocatori casa meno ammoniti)
+- ✈️ Trasferta: ×1.06 (giocatori trasferta più ammoniti)
+- 👨‍⚖️ Arbitro: ×0.85-1.15 basato su severità vs media lega
+- ⚽ Possesso: ×0.85-1.15 basato su stile di gioco
+            """)
 
 
 if __name__ == "__main__":

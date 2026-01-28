@@ -183,9 +183,102 @@ for player in players:
 | 61-80 | Rischio alto |
 | 81-100 | Rischio molto alto |
 
+## Moltiplicatori Contestuali (v2)
+
+A partire dalla versione 2.0, lo score base viene moltiplicato per fattori contestuali che aumentano o diminuiscono il rischio in base al tipo di partita.
+
+### Formula Finale v2
+
+```
+final_score = base_score × derby × home_away × referee_adj × possession
+final_score = min(final_score, 100)  # cap a 100
+```
+
+### 1. Moltiplicatore Derby
+
+Basato sulla tabella `rivalries` con intensità 1-3.
+
+| Intensità | Moltiplicatore | Esempi |
+|-----------|----------------|--------|
+| 1 (minore) | ×1.10 (+10%) | Derby regionali |
+| 2 (sentito) | ×1.18 (+18%) | Rivalità storiche |
+| 3 (massimo) | ×1.26 (+26%) | Derby Madonnina, El Clásico |
+
+```
+derby_multiplier = 1.0 + (0.08 × intensity + 0.02)
+```
+
+**Fonte:** Ricerca accademica su comportamento giocatori in partite ad alta tensione.
+
+### 2. Moltiplicatore Casa/Trasferta
+
+Basato su studio CIES Football Observatory.
+
+| Condizione | Moltiplicatore | Razionale |
+|------------|----------------|-----------|
+| Casa | ×0.94 (-6%) | Giocatori di casa meno ammoniti |
+| Trasferta | ×1.06 (+6%) | Giocatori in trasferta più ammoniti |
+
+**Fonte:** CIES Football Observatory - Home advantage analysis.
+
+### 3. Moltiplicatore Arbitro (Outlier Detection)
+
+Basato sulla vista `referee_league_comparison` che confronta ogni arbitro con la media della sua lega.
+
+```
+referee_adjustment = 1.0 + (ref_league_delta × 0.10)
+referee_adjustment = max(0.85, min(1.15, referee_adjustment))
+```
+
+| Profilo | Delta | Moltiplicatore |
+|---------|-------|----------------|
+| STRICT_OUTLIER | > +1.0 | ×1.10-1.15 |
+| ABOVE_AVERAGE | +0.5 a +1.0 | ×1.05-1.10 |
+| AVERAGE | -0.5 a +0.5 | ×0.95-1.05 |
+| BELOW_AVERAGE | -1.0 a -0.5 | ×0.90-0.95 |
+| LENIENT_OUTLIER | < -1.0 | ×0.85-0.90 |
+
+### 4. Moltiplicatore Possesso
+
+Basato sulla vista `team_possession_stats`. Squadre con meno possesso tendono a commettere più falli.
+
+```
+possession_factor = 1 + (50 - avg_possession) × 0.01
+possession_factor = max(0.85, min(1.15, possession_factor))
+```
+
+| Stile | Possesso | Moltiplicatore |
+|-------|----------|----------------|
+| POSSESSION_HEAVY | 55%+ | ×0.85-0.95 (↓ rischio) |
+| BALANCED | 50-55% | ×0.95-1.00 |
+| COUNTER_ATTACK | 45-50% | ×1.00-1.05 |
+| DEFENSIVE | <45% | ×1.05-1.15 (↑ rischio) |
+
+### Esempio Completo v2
+
+**Partita:** Inter vs Milan (Derby della Madonnina)
+**Arbitro:** Maresca (AVERAGE, delta -0.41)
+**Possesso:** Inter 59% (×0.91), Milan 59% (×0.91)
+
+**Giocatore:** Barella (Inter, casa)
+
+| Componente | Valore |
+|------------|--------|
+| Base score | 41.40 |
+| Derby (int.3) | ×1.26 |
+| Casa | ×0.94 |
+| Arbitro | ×0.96 |
+| Possesso | ×0.91 |
+
+```
+Final = 41.40 × 1.26 × 0.94 × 0.96 × 0.91 = 42.8
+```
+
 ## Limitazioni
 
 - **Dati insufficienti:** Con poche partite, lo score può essere volatile
 - **Nuovi giocatori:** Senza storico, solo score stagionale disponibile
 - **Arbitri nuovi:** Default 25 se nessuno storico con giocatore
 - **H2H limitato:** Solo partite presenti nel database (max 3 stagioni)
+- **Rivalità mancanti:** Se una rivalità non è configurata, derby_multiplier = 1.0
+- **Possesso non disponibile:** Se mancano dati possesso, possession_factor = 1.0

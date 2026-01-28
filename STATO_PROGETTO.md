@@ -1,7 +1,7 @@
 # YellowOracle - Stato del Progetto
 
 **Ultimo aggiornamento:** 2026-01-28
-**Fase attuale:** Alpha v2 - Sync ottimizzato, BSA pronto per sync
+**Fase attuale:** Beta v2.0 - Moltiplicatori contestuali implementati
 
 ---
 
@@ -64,7 +64,12 @@ soccer/
 │
 ├── database/
 │   ├── schema_v2.sql                 # Schema database
-│   └── analysis_views.sql            # Views e RPC functions
+│   ├── analysis_views.sql            # Views e RPC functions
+│   └── migrations/                   # Migrazioni v2.0
+│       ├── 001_derby_rivalries.sql   # Tabella rivalries + funzione
+│       ├── 002_league_baselines.sql  # Vista normalizzazione lega
+│       ├── 003_referee_delta.sql     # Vista outlier arbitri
+│       └── 004_possession_factor.sql # Vista possesso squadre
 │
 ├── scripts/
 │   ├── sync_football_data.py         # Script sync principale
@@ -75,11 +80,13 @@ soccer/
 │       └── test_parallel_api.py
 │
 ├── dashboard/
-│   ├── app.py                        # Homepage Streamlit
+│   ├── app.py                        # Homepage Streamlit v2
 │   └── pages/
-│       ├── 1_players.py
-│       ├── 2_referees.py
-│       └── 3_match_analysis.py
+│       ├── 1_players.py              # Statistiche giocatori
+│       ├── 2_referees.py             # Arbitri con profilo outlier
+│       ├── 3_match_analysis.py       # Analisi partita (MCP integration)
+│       ├── 4_rivalries.py            # Derby & Rivalità
+│       └── 5_team_stats.py           # Statistiche squadre/possesso
 │
 └── docs/                             # Documentazione modulare
     ├── ARCHITECTURE.md               # Overview sistema
@@ -169,32 +176,56 @@ for t in ['competitions','teams','players','referees','matches','match_events','
 
 ## Prossimi Passi
 
-### PRIORITÀ 0: Research-Based Improvements
-Eseguire il piano in `docs/plans/2026-01-27-research-improvements.md`:
+### PRIORITÀ 1: Sincronizzare BSA
 ```bash
-# Usa superpowers:executing-plans per implementare
-# 6 task, 3 fasi, impatto stimato +15-25% accuratezza
+./venv/bin/python scripts/sync_football_data.py --competition BSA --season 2025-2026 --full
 ```
 
-### PRIORITÀ 1: Completare Sync
-```bash
-# Completare Premier League
-./venv/bin/python scripts/sync_football_data.py --competition PL --season 2025-2026 --full
+### PRIORITÀ 2: Test Completo
+Testare il flusso completo con partite reali:
+- Verificare moltiplicatori derby su Inter-Milan, Real-Barca
+- Verificare profili arbitro outlier
+- Verificare fattori possesso
 
-# Bundesliga, Ligue 1
-./venv/bin/python scripts/sync_football_data.py --competition BL1 --season 2025-2026 --full
-./venv/bin/python scripts/sync_football_data.py --competition FL1 --season 2025-2026 --full
-```
+### PRIORITÀ 3: Deploy Dashboard
+Deploy Streamlit su cloud (Streamlit Cloud o Render).
 
-### PRIORITÀ 2: Test Analisi
-Testare il flusso completo con partite reali delle competizioni sincronizzate.
-
-### PRIORITÀ 3: Dashboard (Fase Beta)
-Migliorare UI Streamlit e deploy su cloud.
+### PRIORITÀ 4: Ottimizzazioni Future
+- Cache risultati `analyze_match_risk`
+- Matchup bonus per foul drawers (Vinicius, Leao)
+- League baseline dinamico (calcolo da dati reali)
 
 ---
 
 ## Cronologia Sessioni
+
+### 2026-01-28 (Sessione 8) - MAJOR: v2.0
+- **Piano Integrato Eseguito** (`docs/plans/2026-01-28-integrated-improvements.md`):
+  - 11 task completati in 4 fasi (0, A, B, C, D)
+  - Impatto stimato: +15-25% accuratezza predizioni
+- **Database (Fase A):**
+  - Creata tabella `rivalries` con 50+ rivalità (6 leghe)
+  - Creata vista `league_card_baselines` (normalizzazione per lega)
+  - Creata vista `referee_league_comparison` (profilo outlier arbitri)
+  - Creata vista `team_possession_stats` (stile gioco squadre)
+  - 4 migrazioni SQL in `database/migrations/`
+- **MCP Server (Fase B):**
+  - `analyze_match_risk` integra 5 moltiplicatori contestuali:
+    - Derby detection: ×1.10-1.26
+    - Home/Away: ×0.94/×1.06
+    - Referee outlier: ×0.85-1.15
+    - Possession: ×0.85-1.15
+    - League normalization (parziale)
+  - Output JSON include: `derby`, `possession`, `referee_profile`, `multipliers`
+- **Dashboard (Fase C):**
+  - `2_referees.py`: Aggiunto filtro competizione, profilo outlier
+  - `3_match_analysis.py`: Riscritto con integrazione MCP completa
+  - `4_rivalries.py`: Nuova pagina Derby & Rivalità
+  - `5_team_stats.py`: Nuova pagina Statistiche Squadre
+  - `app.py`: Homepage v2.0 con 5 metriche e quick actions
+- **Documentazione (Fase D):**
+  - `docs/SCORING.md`: Aggiunta sezione Moltiplicatori Contestuali v2
+  - `STATO_PROGETTO.md`: Aggiornato struttura e cronologia
 
 ### 2026-01-28 (Sessione 7)
 - **Analisi problemi sync:**

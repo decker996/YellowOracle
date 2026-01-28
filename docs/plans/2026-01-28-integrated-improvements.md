@@ -32,18 +32,18 @@ Il piano è progettato per essere eseguito in sessioni separate. Ogni fase è in
 
 Aggiorna questa checklist man mano che completi i task:
 
-- [ ] **Task 0:** Ricerca derby completata
-- [ ] **Task 1:** Migrazione `001_derby_rivalries.sql` eseguita
-- [ ] **Task 2:** Migrazione `002_league_baselines.sql` eseguita
-- [ ] **Task 3:** Migrazione `003_referee_delta.sql` eseguita
-- [ ] **Task 4:** Migrazione `004_possession_factor.sql` eseguita
-- [ ] **Task 5:** `mcp_server.py` aggiornato
-- [ ] **Task 6:** Pagina Arbitri aggiornata
-- [ ] **Task 7:** Pagina Analisi Partita riscritta
-- [ ] **Task 8:** Pagina Derby & Rivalità creata
-- [ ] **Task 9:** Pagina Statistiche Squadre creata
-- [ ] **Task 10:** Homepage aggiornata
-- [ ] **Task 11:** Documentazione aggiornata
+- [x] **Task 0:** Ricerca derby completata (2026-01-28)
+- [x] **Task 1:** Migrazione `001_derby_rivalries.sql` eseguita in Supabase (2026-01-28)
+- [x] **Task 2:** Migrazione `002_league_baselines.sql` eseguita in Supabase (2026-01-28)
+- [x] **Task 3:** Migrazione `003_referee_delta.sql` eseguita in Supabase (2026-01-28)
+- [x] **Task 4:** Migrazione `004_possession_factor.sql` eseguita in Supabase (2026-01-28) - corretta colonna fouls_suffered
+- [x] **Task 5:** `mcp_server.py` aggiornato (2026-01-28) - integrati derby, possession, referee profile, home/away
+- [x] **Task 6:** Pagina Arbitri aggiornata (2026-01-28) - aggiunto profilo outlier
+- [x] **Task 7:** Pagina Analisi Partita riscritta (2026-01-28) - integrazione MCP completa
+- [x] **Task 8:** Pagina Derby & Rivalità creata (2026-01-28)
+- [x] **Task 9:** Pagina Statistiche Squadre creata (2026-01-28)
+- [x] **Task 10:** Homepage aggiornata (2026-01-28) - v2.0
+- [x] **Task 11:** Documentazione aggiornata (2026-01-28) - SCORING.md + STATO_PROGETTO.md
 
 ### Note Importanti
 

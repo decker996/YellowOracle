@@ -30,55 +30,108 @@ def main():
     with tab1:
         st.subheader("Classifica Arbitri per Severità")
 
-        try:
-            # Usa la vista referee_stats se esiste, altrimenti query diretta
-            result = supabase.table("referees").select(
-                "id, name, nationality, total_matches, total_yellows, total_reds, avg_yellows_per_match"
-            ).gt("total_matches", 0).order("avg_yellows_per_match", desc=True).execute()
+        # Filtro competizione
+        competitions = ["Tutte", "SA", "PL", "PD", "BL1", "FL1", "CL", "BSA"]
+        selected_comp = st.selectbox("Competizione", competitions, key="ref_comp_filter")
 
-            if result.data:
-                df = pd.DataFrame(result.data)
+        try:
+            # Prova prima la vista con profilo outlier
+            if selected_comp != "Tutte":
+                profile_result = supabase.table("referee_league_comparison").select(
+                    "referee_name, competition_code, matches_in_league, ref_avg_yellows, "
+                    "league_avg_yellows, ref_league_delta, referee_profile"
+                ).eq("competition_code", selected_comp).order("ref_league_delta", desc=True).execute()
+            else:
+                profile_result = supabase.table("referee_league_comparison").select(
+                    "referee_name, competition_code, matches_in_league, ref_avg_yellows, "
+                    "league_avg_yellows, ref_league_delta, referee_profile"
+                ).order("ref_league_delta", desc=True).execute()
+
+            if profile_result.data:
+                df = pd.DataFrame(profile_result.data)
+
+                # Formatta profilo con emoji
+                def format_profile(profile):
+                    colors = {
+                        "STRICT_OUTLIER": "🔴 SEVERO",
+                        "ABOVE_AVERAGE": "🟠 Sopra media",
+                        "AVERAGE": "⚪ Nella media",
+                        "BELOW_AVERAGE": "🟢 Sotto media",
+                        "LENIENT_OUTLIER": "🟢 PERMISSIVO"
+                    }
+                    return colors.get(profile, "⚪ N/A")
+
+                df["Profilo"] = df["referee_profile"].apply(format_profile)
 
                 df_display = df.rename(columns={
-                    "name": "Arbitro",
-                    "nationality": "Nazionalità",
-                    "total_matches": "Partite",
-                    "total_yellows": "Gialli Tot.",
-                    "total_reds": "Rossi Tot.",
-                    "avg_yellows_per_match": "Media Gialli/Partita"
+                    "referee_name": "Arbitro",
+                    "competition_code": "Lega",
+                    "matches_in_league": "Partite",
+                    "ref_avg_yellows": "Media Arbitro",
+                    "league_avg_yellows": "Media Lega",
+                    "ref_league_delta": "Delta"
                 })
 
-                columns = ["Arbitro", "Nazionalità", "Partite", "Gialli Tot.", "Rossi Tot.", "Media Gialli/Partita"]
-                df_display = df_display[columns]
-
                 # Metriche
-                col1, col2, col3 = st.columns(3)
-                col1.metric("Arbitri totali", len(df_display))
-                col2.metric("Media gialli/partita (tutti)", f"{df_display['Media Gialli/Partita'].mean():.2f}")
-                col3.metric("Arbitro più severo", df_display.iloc[0]["Arbitro"] if len(df_display) > 0 else "N/A")
+                col1, col2, col3, col4 = st.columns(4)
+                col1.metric("Arbitri", len(df_display))
+                strict_count = len(df[df["referee_profile"] == "STRICT_OUTLIER"])
+                lenient_count = len(df[df["referee_profile"] == "LENIENT_OUTLIER"])
+                col2.metric("Severi (outlier)", strict_count)
+                col3.metric("Permissivi (outlier)", lenient_count)
+                if len(df_display) > 0:
+                    col4.metric("Più severo", df_display.iloc[0]["Arbitro"])
 
                 st.markdown("---")
 
                 st.dataframe(
-                    df_display,
+                    df_display[["Arbitro", "Lega", "Partite", "Media Arbitro", "Media Lega", "Delta", "Profilo"]],
                     use_container_width=True,
                     hide_index=True,
                     column_config={
-                        "Media Gialli/Partita": st.column_config.NumberColumn(format="%.2f"),
+                        "Media Arbitro": st.column_config.NumberColumn(format="%.2f"),
+                        "Media Lega": st.column_config.NumberColumn(format="%.2f"),
+                        "Delta": st.column_config.NumberColumn(format="%+.2f"),
                     }
                 )
 
-                # Grafico
-                if len(df_display) > 0:
-                    st.markdown("### Top 10 Arbitri più Severi")
-                    top10 = df_display.head(10)
-                    st.bar_chart(top10.set_index("Arbitro")["Media Gialli/Partita"])
+                # Legenda
+                st.caption("""
+                **Profilo:** Confronto con la media della lega
+                - 🔴 SEVERO: +1.0 gialli sopra media lega
+                - 🟠 Sopra media: +0.5 a +1.0
+                - ⚪ Nella media: -0.5 a +0.5
+                - 🟢 Sotto media/PERMISSIVO: -0.5 o meno
+                """)
 
             else:
-                st.info("Nessun dato arbitri disponibile")
+                # Fallback alla query base
+                result = supabase.table("referees").select(
+                    "id, name, nationality, total_matches, total_yellows, total_reds, avg_yellows_per_match"
+                ).gt("total_matches", 0).order("avg_yellows_per_match", desc=True).execute()
+
+                if result.data:
+                    df = pd.DataFrame(result.data)
+                    df_display = df.rename(columns={
+                        "name": "Arbitro",
+                        "nationality": "Nazionalità",
+                        "total_matches": "Partite",
+                        "total_yellows": "Gialli Tot.",
+                        "total_reds": "Rossi Tot.",
+                        "avg_yellows_per_match": "Media Gialli/Partita"
+                    })
+
+                    st.dataframe(
+                        df_display[["Arbitro", "Nazionalità", "Partite", "Gialli Tot.", "Rossi Tot.", "Media Gialli/Partita"]],
+                        use_container_width=True,
+                        hide_index=True
+                    )
+                else:
+                    st.info("Nessun dato arbitri disponibile")
 
         except Exception as e:
             st.error(f"Errore: {e}")
+            st.info("Assicurati di aver eseguito la migrazione 003_referee_delta.sql")
 
     with tab2:
         st.subheader("Storico Arbitro-Giocatore")
