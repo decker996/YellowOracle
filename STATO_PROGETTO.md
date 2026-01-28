@@ -1,14 +1,14 @@
 # YellowOracle - Stato del Progetto
 
-**Ultimo aggiornamento:** 2026-01-27 15:30
-**Fase attuale:** Alpha v2 - Piano miglioramenti research-based pronto
+**Ultimo aggiornamento:** 2026-01-28
+**Fase attuale:** Alpha v2 - Sync ottimizzato, BSA pronto per sync
 
 ---
 
 ## Cosa è YellowOracle
 
 Sistema di analisi cartellini per scommesse calcistiche. Analizza:
-1. **Storico stagionale giocatore** - Cartellini per competizione (Serie A, CL, EL...)
+1. **Storico stagionale giocatore** - Cartellini per competizione (Serie A, PL, La Liga, Bundesliga, Ligue 1, CL, BSA)
 2. **Storico arbitro-giocatore** - Come un arbitro si comporta con specifici giocatori
 3. **Scontri diretti** - Cartellini storici negli head-to-head tra due squadre
 4. **Statistiche partita** - Falli, possesso, tiri (aggregato per squadra)
@@ -204,14 +204,16 @@ Migliorare UI Streamlit e deploy su cloud.
 - **Nuova competizione:**
   - Aggiunto BSA (Brasileirão Série A) alla configurazione
   - Verificato accesso API: BSA accessibile
-  - Da sincronizzare manualmente con `--full`
-- **Documentazione tempi sync:**
-  - Collo di bottiglia: `sync_player_stats` (~50 min per 1230 giocatori)
-  - Pausa 60s tra batch necessaria per rate limit
-  - Raccomandazione: usare sempre `--incremental` per update
+  - Pronto per sync via GitHub Actions
+- **Ottimizzazione sync:**
+  - Parallelizzato `sync_players`: da ~90s sequenziale a ~2min parallelo
+  - Collo di bottiglia principale: `sync_player_stats` (~25-50 min)
+  - Raccomandazione: usare `--incremental --full` per update settimanali
 - **Aggiornato piano research-improvements:**
   - Rimosso EL, aggiunto BSA con derby brasiliani
   - Aggiunto fattore normalizzazione BSA (×1.10)
+- **GitHub Actions:**
+  - Aggiornata lista competizioni default: `SA PL PD BL1 FL1 CL BSA`
 
 ### 2026-01-27 (Sessione 6)
 - **Piano Research-Based Improvements:**
