@@ -351,45 +351,70 @@ def sync_teams(supabase: Client, competition_code: str, season: str) -> dict:
     return team_map
 
 
-def sync_players(supabase: Client, team_map: dict) -> dict:
-    """Sincronizza i giocatori di tutte le squadre."""
-    print("\n👥 Sincronizzazione giocatori...")
+def process_team_players(supabase: Client, data: dict, internal_team_id: str) -> dict:
+    """Processa i giocatori di una singola squadra. Ritorna dict external_id -> internal_id."""
+    player_map = {}
 
-    player_map = {}  # external_id -> internal_id
+    if not data or not data.get("squad"):
+        return player_map
+
+    for player in data["squad"]:
+        try:
+            position = player.get("position", "")
+
+            supabase.table("players").upsert({
+                "external_id": player["id"],
+                "name": player["name"],
+                "first_name": player.get("firstName"),
+                "last_name": player.get("lastName"),
+                "date_of_birth": player.get("dateOfBirth"),
+                "nationality": player.get("nationality"),
+                "position": position,
+                "shirt_number": player.get("shirtNumber"),
+                "current_team_id": internal_team_id,
+                "updated_at": datetime.now().isoformat()
+            }, on_conflict="external_id").execute()
+
+            # Recupera l'ID interno
+            query = supabase.table("players").select("id").eq("external_id", player["id"]).execute()
+            if query.data:
+                player_map[player["id"]] = query.data[0]["id"]
+
+        except Exception:
+            pass
+
+    return player_map
+
+
+def sync_players(supabase: Client, team_map: dict) -> dict:
+    """
+    Sincronizza i giocatori di tutte le squadre.
+    USA PARALLELIZZAZIONE per velocizzare il sync.
+    """
+    if not team_map:
+        print("\n👥 Nessuna squadra da sincronizzare")
+        return {}
+
+    print(f"\n{'='*60}")
+    print(f"👥 SYNC GIOCATORI (parallelizzato)")
+    print(f"{'='*60}")
+
+    # Costruisci lista di endpoint e mapping
+    team_items = list(team_map.items())  # [(external_id, internal_id), ...]
+    endpoints = [f"/teams/{ext_id}" for ext_id, _ in team_items]
+
+    # Esegui tutte le chiamate in parallelo
+    all_results = asyncio.run(api_request_batch(endpoints, description="rose squadre"))
+
+    # Processa i risultati
+    print(f"  💾 Processando giocatori...")
+    player_map = {}
     total = 0
 
-    for external_team_id, internal_team_id in team_map.items():
-        data = api_request(f"/teams/{external_team_id}")
-
-        if not data.get("squad"):
-            continue
-
-        for player in data["squad"]:
-            try:
-                # Mappa la posizione
-                position = player.get("position", "")
-
-                result = supabase.table("players").upsert({
-                    "external_id": player["id"],
-                    "name": player["name"],
-                    "first_name": player.get("firstName"),
-                    "last_name": player.get("lastName"),
-                    "date_of_birth": player.get("dateOfBirth"),
-                    "nationality": player.get("nationality"),
-                    "position": position,
-                    "shirt_number": player.get("shirtNumber"),
-                    "current_team_id": internal_team_id,
-                    "updated_at": datetime.now().isoformat()
-                }, on_conflict="external_id").execute()
-
-                # Recupera l'ID interno
-                query = supabase.table("players").select("id").eq("external_id", player["id"]).execute()
-                if query.data:
-                    player_map[player["id"]] = query.data[0]["id"]
-                    total += 1
-
-            except Exception as e:
-                print(f"  ❌ Errore salvando {player.get('name', 'unknown')}: {e}")
+    for (external_team_id, internal_team_id), data in zip(team_items, all_results):
+        team_player_map = process_team_players(supabase, data, internal_team_id)
+        player_map.update(team_player_map)
+        total += len(team_player_map)
 
     print(f"  ✅ Sincronizzati {total} giocatori")
     return player_map
