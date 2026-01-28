@@ -7,7 +7,7 @@ on:
       competitions:
         description: 'Competizioni da sincronizzare (spazio separato)'
         required: false
-        default: 'SA PL PD BL1 FL1 CL EL'
+        default: 'SA PL PD BL1 FL1 CL BSA'
         type: string
       sync_type:
         description: 'Tipo di sincronizzazione'
@@ -83,7 +83,7 @@ jobs:
         run: |
           echo "=== YellowOracle Weekly Sync (Scheduled - Incremental) ==="
 
-          COMPETITIONS="SA PL PD BL1 FL1 CL EL"
+          COMPETITIONS="SA PL PD BL1 FL1 CL BSA"
 
           for COMP in $COMPETITIONS; do
             echo ""
