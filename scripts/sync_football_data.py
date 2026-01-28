@@ -17,8 +17,8 @@ Uso:
     # Tutte le competizioni configurate
     python scripts/sync_football_data.py --all-competitions --season 2025-2026
 
-Competizioni supportate: PD (La Liga), SA (Serie A), BL1 (Bundesliga),
-                         PL (Premier League), FL1 (Ligue 1)
+Competizioni supportate: SA (Serie A), PL (Premier League), PD (La Liga),
+                         BL1 (Bundesliga), FL1 (Ligue 1), BSA (Brasileirão), CL (Champions League)
 
 Richiede piano "Free + Deep Data" (€29/mese) + "Statistics Add-On" (€15/mese)
 """
@@ -48,15 +48,16 @@ API_BASE = "https://api.football-data.org/v4"
 
 # Competizioni supportate
 COMPETITIONS = {
-    # Campionati nazionali
-    'PD': {'name': 'La Liga', 'area': 'Spain', 'area_code': 'ESP'},
+    # Campionati nazionali europei
     'SA': {'name': 'Serie A', 'area': 'Italy', 'area_code': 'ITA'},
-    'BL1': {'name': 'Bundesliga', 'area': 'Germany', 'area_code': 'GER'},
     'PL': {'name': 'Premier League', 'area': 'England', 'area_code': 'ENG'},
+    'PD': {'name': 'La Liga', 'area': 'Spain', 'area_code': 'ESP'},
+    'BL1': {'name': 'Bundesliga', 'area': 'Germany', 'area_code': 'GER'},
     'FL1': {'name': 'Ligue 1', 'area': 'France', 'area_code': 'FRA'},
+    # Campionati sudamericani
+    'BSA': {'name': 'Campeonato Brasileiro Série A', 'area': 'Brazil', 'area_code': 'BRA'},
     # Competizioni UEFA
     'CL': {'name': 'UEFA Champions League', 'area': 'Europe', 'area_code': 'UEFA'},
-    'EL': {'name': 'UEFA Europa League', 'area': 'Europe', 'area_code': 'UEFA'},
 }
 
 # Rate limiting: 30 chiamate/minuto con piano a pagamento

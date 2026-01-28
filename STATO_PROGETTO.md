@@ -17,15 +17,17 @@ Sistema di analisi cartellini per scommesse calcistiche. Analizza:
 
 ## Stato Database
 
-| Competizione | Codice | Stato | Note |
-|--------------|--------|-------|------|
-| Serie A | SA | ✅ Completo | 3 stagioni |
-| La Liga | PD | ⚠️ Parziale | In completamento |
-| Premier League | PL | ⏳ In corso | Stagione corrente |
-| Bundesliga | BL1 | ❌ Da fare | - |
-| Ligue 1 | FL1 | ❌ Da fare | - |
-| Champions League | CL | ❌ Da fare | - |
-| Europa League | EL | ❌ Da fare | - |
+| Competizione | Codice | Partite | FINISHED | Stato |
+|--------------|--------|---------|----------|-------|
+| Serie A | SA | 1140 | 979 | ✅ Completo |
+| Premier League | PL | 1140 | 990 | ✅ Completo |
+| La Liga | PD | 1140 | 969 | ✅ Completo |
+| Bundesliga | BL1 | 918 | 779 | ✅ Completo |
+| Ligue 1 | FL1 | 918 | 782 | ✅ Completo |
+| Champions League | CL | 503 | 440 | ✅ Completo |
+| Brasileirão | BSA | - | - | ⏳ Da sincronizzare |
+
+> **Nota:** Europa League (EL) rimossa - non accessibile con il piano API attuale.
 
 ---
 
@@ -193,6 +195,23 @@ Migliorare UI Streamlit e deploy su cloud.
 ---
 
 ## Cronologia Sessioni
+
+### 2026-01-28 (Sessione 7)
+- **Analisi problemi sync:**
+  - Verificato stato database: 6 competizioni complete (SA, PL, PD, BL1, FL1, CL)
+  - Identificato errore Europa League: 403 Forbidden (non nel piano API)
+  - Rimossa EL dalla configurazione e dal database
+- **Nuova competizione:**
+  - Aggiunto BSA (Brasileirão Série A) alla configurazione
+  - Verificato accesso API: BSA accessibile
+  - Da sincronizzare manualmente con `--full`
+- **Documentazione tempi sync:**
+  - Collo di bottiglia: `sync_player_stats` (~50 min per 1230 giocatori)
+  - Pausa 60s tra batch necessaria per rate limit
+  - Raccomandazione: usare sempre `--incremental` per update
+- **Aggiornato piano research-improvements:**
+  - Rimosso EL, aggiunto BSA con derby brasiliani
+  - Aggiunto fattore normalizzazione BSA (×1.10)
 
 ### 2026-01-27 (Sessione 6)
 - **Piano Research-Based Improvements:**

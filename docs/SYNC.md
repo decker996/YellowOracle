@@ -234,12 +234,50 @@ Warning: No statistics for match XXX
 
 ## Stato Attuale Database
 
-| Competizione | Stagioni | Partite | Status |
-|--------------|----------|---------|--------|
-| Serie A (SA) | 2023-2026 | ~1140 | ✅ Completo |
-| La Liga (PD) | 2023-2026 | ~760 | ⚠️ Parziale |
-| Premier League (PL) | 2025-2026 | - | ⏳ In corso |
-| Bundesliga (BL1) | - | - | ❌ Da fare |
-| Ligue 1 (FL1) | - | - | ❌ Da fare |
-| Champions League (CL) | - | - | ❌ Da fare |
-| Europa League (EL) | - | - | ❌ Da fare |
+| Competizione | Stagioni | Partite | FINISHED | Status |
+|--------------|----------|---------|----------|--------|
+| Serie A (SA) | 2023-2026 | 1140 | 979 | ✅ Completo |
+| Premier League (PL) | 2023-2026 | 1140 | 990 | ✅ Completo |
+| La Liga (PD) | 2023-2026 | 1140 | 969 | ✅ Completo |
+| Bundesliga (BL1) | 2023-2026 | 918 | 779 | ✅ Completo |
+| Ligue 1 (FL1) | 2023-2026 | 918 | 782 | ✅ Completo |
+| Champions League (CL) | 2023-2026 | 503 | 440 | ✅ Completo |
+| Brasileirão (BSA) | - | - | - | ⏳ Da sincronizzare |
+
+> **Nota:** Europa League (EL) non è accessibile con il piano API attuale (403 Forbidden).
+
+## Analisi Tempi di Sincronizzazione
+
+Dal log della Champions League 2025-2026:
+
+| Fase | Operazioni | Tempo | Collo di bottiglia |
+|------|------------|-------|-------------------|
+| Competizione + Squadre | 1 + 1 API call | ~5s | - |
+| Giocatori | 36 squadre × 1 call | ~90s | Rate limit (2.5s/call) |
+| Partite | 1 API call | ~3s | - |
+| Arbitri | Da dati partite | ~1s | - |
+| **Dettagli partite** | 189 partite | **~7 min** | Batch 25 + 60s pausa |
+| **Stats giocatori** | 1230 giocatori | **~50 min** | Batch 25 + 60s pausa |
+| Aggiornamento arbitri | Calcolo locale | ~10s | - |
+
+### Il Collo di Bottiglia: `sync_player_stats`
+
+La funzione `sync_player_stats` chiama `/persons/{id}/matches` per **ogni giocatore** della competizione:
+- 1230 giocatori → 50 batch da 25
+- Ogni batch richiede 60s di pausa per rate limit
+- **Tempo totale: ~50 minuti**
+
+### Ottimizzazioni Possibili
+
+| Ottimizzazione | Impatto | Complessità |
+|----------------|---------|-------------|
+| **Usare `--incremental`** | Riduce giocatori da sync | ✅ Già implementato |
+| Saltare `sync_player_stats` per CL/EL | -50 min | Media |
+| Cache giocatori già sincronizzati | -30% tempo | Alta |
+| Aumentare batch a 29 | -15% tempo | Bassa (rischio 429) |
+
+### Raccomandazioni
+
+1. **Per update settimanali**: usare sempre `--incremental --full`
+2. **Per sync iniziale**: pianificare tempo sufficiente (~45 min/competizione)
+3. **Per CL**: considerare se stats giocatori sono necessarie (molti giocano anche in campionati già sincronizzati)

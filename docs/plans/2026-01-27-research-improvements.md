@@ -37,8 +37,8 @@ Eseguire ricerche web complete per:
 | Premier League (PL) | "Premier League derbies complete list", "English football rivalries" |
 | Bundesliga (BL1) | "Bundesliga derbies complete list", "German football rivalries" |
 | Ligue 1 (FL1) | "Ligue 1 derbies complete list", "French football rivalries" |
-| Champions League (CL) | "Champions League historic rivalries", "European football classic matches" |
-| Europa League (EL) | Usa le rivalità nazionali già trovate |
+| Brasileirão (BSA) | "Campeonato Brasileiro clássicos rivalidades", "Brazilian football derbies rivalries" |
+| Champions League (CL) | Usa le rivalità nazionali già trovate |
 
 **Step 2: Per ogni rivalità trovata, raccogliere:**
 
@@ -127,6 +127,19 @@ Sostituire le INSERT di esempio nel Task 1 con la lista completa generata.
 - Derby Rhône-Alpes (Lyon-Saint-Étienne)
 - Choc des Olympiques (Lyon-Marseille)
 - Altri...
+
+**Brasileirão (BSA):**
+- Fla-Flu (Flamengo-Fluminense)
+- Clássico Majestoso (Corinthians-São Paulo)
+- Clássico dos Milhões (Flamengo-Vasco)
+- Derby Paulista (Corinthians-Palmeiras)
+- Grenal (Grêmio-Internacional)
+- Clássico da Saudade (Palmeiras-São Paulo)
+- Clássico Vovô (Santos-Corinthians)
+- Clássico Alvinegro (Santos-Corinthians, Botafogo-Corinthians)
+- Clássico das Nações (Bahia-Vitória)
+- Clássico Atletiba (Athletico-Coritiba)
+- Altri clássicos regionais...
 
 **Output atteso:** Lista SQL completa con 50-100 rivalità da inserire nel Task 1.
 
@@ -298,7 +311,7 @@ SELECT
         WHEN 'BL1' THEN 3.90  -- Bundesliga (più bassa)
         WHEN 'FL1' THEN 3.65  -- Ligue 1
         WHEN 'CL' THEN 4.20   -- Champions League (stima)
-        WHEN 'EL' THEN 4.00   -- Europa League (stima)
+        WHEN 'BSA' THEN 4.50  -- Brasileirão (stima, campionato fisico)
         ELSE 4.00             -- Default
     END AS baseline_yellows_per_match,
     -- Fattore normalizzazione (Serie A = 1.0 come riferimento)
@@ -309,7 +322,7 @@ SELECT
         WHEN 'BL1' THEN 0.95  -- Bundesliga: -5%
         WHEN 'FL1' THEN 0.89  -- Ligue 1: -11%
         WHEN 'CL' THEN 1.02   -- Champions: +2%
-        WHEN 'EL' THEN 0.98   -- Europa League: -2%
+        WHEN 'BSA' THEN 1.10  -- Brasileirão: +10% (campionato fisico)
         ELSE 1.00
     END AS normalization_factor
 FROM competitions c;

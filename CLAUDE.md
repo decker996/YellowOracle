@@ -173,15 +173,15 @@ L'arbitro è severo? Questi fattori influenzano la tua valutazione.]
 
 ## Competizioni Supportate
 
-| Codice | Competizione |
-|--------|--------------|
-| SA | Serie A |
-| PL | Premier League |
-| PD | La Liga |
-| BL1 | Bundesliga |
-| FL1 | Ligue 1 |
-| CL | UEFA Champions League |
-| EL | UEFA Europa League |
+| Codice | Competizione | Stato DB |
+|--------|--------------|----------|
+| SA | Serie A | ✅ Completo |
+| PL | Premier League | ✅ Completo |
+| PD | La Liga | ✅ Completo |
+| BL1 | Bundesliga | ✅ Completo |
+| FL1 | Ligue 1 | ✅ Completo |
+| CL | UEFA Champions League | ✅ Completo |
+| BSA | Campeonato Brasileiro Série A | ⏳ Da sincronizzare |
 
 ---
 
