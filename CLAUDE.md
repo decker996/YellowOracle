@@ -135,11 +135,26 @@ Dopo i dati matematici, cerca contesto qualitativo:
 | Ricerca | Query esempio | Impatto |
 |---------|---------------|---------|
 | **Assenze** | "[Squadra] infortunati squalificati [mese anno]" | Escludi giocatori, valuta sostituti |
-| **Classifica** | "classifica [competizione] [stagione]" | Importanza partita |
+| **Classifica** | "classifica [competizione] [stagione]" | Importanza partita, lotta salvezza/scudetto |
 | **Forma** | "[Squadra] ultime 5 partite risultati" | Squadra nervosa = più rischio |
 | **Stile gioco** | "[Squadra] stile di gioco tattica [allenatore]" | Aggressività |
 
 **NOTA:** Non cercare più "derby/rivalità" manualmente - il tool lo rileva automaticamente dal database.
+
+### Fattori Qualitativi (da Web)
+
+Questi fattori NON sono nel database e vanno cercati via web. Usali nel **ragionamento discorsivo**:
+
+| Fattore | Quando si applica | Impatto stimato |
+|---------|-------------------|-----------------|
+| **Partita decisiva** | Lotta scudetto, salvezza, qualificazione CL/EL | +15% rischio |
+| **Squadra in crisi** | 4+ partite senza vittoria | +10% rischio |
+| **Tensioni recenti** | Polemiche, dichiarazioni calde pre-partita | +10% rischio |
+| **Scontri precedenti accesi** | Risse, espulsioni multiple in partite recenti | +10% rischio |
+
+**Come usarli:** Non sono moltiplicatori matematici ma fattori da integrare nell'analisi discorsiva. Esempio:
+> "Il Lecce lotta per la salvezza e viene da 5 sconfitte consecutive - questa tensione
+> aumenta la probabilità di nervosismo e falli duri, specialmente per i difensori..."
 
 ---
 
@@ -156,6 +171,7 @@ Usa SEMPRE questo formato:
 - **Formazioni:** ✅ Confermate | ⚠️ Probabili | ❌ Non disponibili
 - **Derby:** 🔥 Nome Derby (intensità X/3) | Partita regolare
 - **Possesso atteso:** Casa XX% (STILE) | Trasferta XX% (STILE)
+- **Contesto:** [Lotta scudetto/salvezza, forma recente, tensioni - da ricerca web]
 
 ### 🎲 Moltiplicatori Attivi
 `🔥 Derby ×1.26` `🏠 Casa ×0.94` `✈️ Trasf ×1.06` `👨‍⚖️ Arbitro ×0.96` `⚽ Poss ×0.91`
@@ -168,16 +184,21 @@ l'arbitro, dello storico negli scontri diretti, del contesto della
 partita. Usa un tono naturale, come se stessi spiegando a un amico
 che capisce di calcio.
 
-IMPORTANTE: Integra i moltiplicatori nel ragionamento!
+IMPORTANTE: Integra i moltiplicatori E il contesto nel ragionamento!
 - Se è un derby, spiega perché aumenta il rischio (+26% per intensità 3)
 - Se l'arbitro è STRICT_OUTLIER, menziona che è più severo della media
 - Se una squadra ha poco possesso (COUNTER_ATTACK), spiega che commette più falli
+- Se è partita decisiva (salvezza, scudetto), menziona la tensione extra
+- Se una squadra è in crisi di risultati, spiega il nervosismo
 
 Esempio:
 "Il Derby della Madonnina porta sempre tensione extra - il nostro modello
 applica un +26% al rischio base. Barella, già propenso al giallo (0.45/90min),
 gioca in casa (×0.94) ma in un contesto caldissimo. L'Inter ha un possesso
-del 59%, stile POSSESSION_HEAVY, che abbassa leggermente il rischio falli..."]
+del 59%, stile POSSESSION_HEAVY, che abbassa leggermente il rischio falli.
+Il Milan arriva da 3 sconfitte consecutive e lotta per un posto in Champions:
+questa tensione extra potrebbe portare a interventi più duri da parte dei
+rossoneri, specialmente a centrocampo..."]
 
 ### 🎯 Top 5 Rischio Cartellino
 
